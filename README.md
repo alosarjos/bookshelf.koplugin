@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/bookshelf-logo-dark.png">
-    <img alt="Bookshelf" src="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/bookshelf-logo.png" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/bookshelf-logo-dark.png">
+    <img alt="Bookshelf" src="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/bookshelf-logo.png" width="320">
   </picture>
 </p>
 
@@ -19,7 +19,7 @@ A friendly home screen for KOReader. Browse your library by series, author, genr
 
 ## Install
 
-1. Download the latest **bookshelf.koplugin.zip** from [Releases](https://github.com/AndyHazz/bookshelf.koplugin/releases).
+1. Download the latest **bookshelf.koplugin.zip** from [Releases](https://github.com/alosarjos/bookshelf.koplugin/releases).
 2. Unzip it onto your device's KOReader plugins folder:
 
    | Device | Plugins folder |
@@ -93,7 +93,7 @@ To edit them, open **menu -> Settings -> Edit book detail view** (see [Customisi
 ### Micro-modules on the home screen
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/hero-grid.png" width="32%" alt="Home screen showing a grid of micro-modules" />
+  <img src="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/hero-grid.png" width="32%" alt="Home screen showing a grid of micro-modules" />
 </p>
 
 The home screen can show a grid of **micro-modules** -- small live panels like a clock, a quote from your highlights, your reading goal, the weather, or a launcher button. They're the same kinds of panels you can add to the [start menu](#micro-modules).
@@ -164,8 +164,8 @@ If a KOReader folder shortcut, the "go to parent folder" or "go home" gesture, o
 ## The start menu
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/start-menu.png" width="32%" alt="Start menu open with a folder flyout" />
-  <img src="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/micromodules.png" width="32%" alt="Micro-module picker" />
+  <img src="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/start-menu.png" width="32%" alt="Start menu open with a folder flyout" />
+  <img src="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/micromodules.png" width="32%" alt="Micro-module picker" />
 </p>
 
 Tap the menu button in the bottom corner of the shelf, in line with the page arrows, to open a popup launcher you build yourself. Think of it as a Start menu for your home screen.

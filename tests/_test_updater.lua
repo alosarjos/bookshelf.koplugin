@@ -47,7 +47,7 @@ local Updater = dofile("lib/bookshelf_updater.lua")
 local t = dofile("tests/_helpers.lua").runner()
 
 -- ── composeBranchUrl ────────────────────────────────────────────────────────
-local BASE = "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/zipball/"
+local BASE = "https://api.github.com/repos/alosarjos/bookshelf.koplugin/zipball/"
 
 t.test("composeBranchUrl: plain branch passes through", function()
     assert(Updater.composeBranchUrl("master") == BASE .. "master")
@@ -136,7 +136,7 @@ end)
 -- feature/v5.2-test survives, which also let a ".." segment out of the repo
 -- path: both curl (client-side) and api.github.com (server-side) collapse dot
 -- segments, so a typed "branch" could retarget the install at ANY repo while
--- every URL constant in the module still says AndyHazz. git itself forbids ".."
+-- every URL constant in the module still says alosarjos. git itself forbids ".."
 -- anywhere in a refname, so rejecting it outright cannot reject a real branch.
 t.test("composeBranchUrl: rejects a traversal segment", function()
     assert(Updater.composeBranchUrl("../../../evil/repo/zipball/master") == nil,
