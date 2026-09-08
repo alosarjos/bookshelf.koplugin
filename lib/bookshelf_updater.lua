@@ -93,14 +93,14 @@ function Updater.composeBranchUrl(branch)
     -- passes "/" and "." through so feature/v5.2-test survives, and both curl
     -- (client-side) and api.github.com (server-side) collapse dot segments, so
     -- "../../../owner/repo/zipball/master" retargets the download at an
-    -- arbitrary repo while every URL constant here still reads AndyHazz. git
+    -- arbitrary repo while every URL constant here still reads alosarjos. git
     -- forbids ".." anywhere in a refname, so no real branch can contain one.
     if branch:find("..", 1, true) then return nil end
     local encoded = branch:gsub("[^%w%-_/.~]", function(c)
         return string.format("%%%02X", c:byte())
     end)
     return string.format(
-        "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/zipball/%s",
+        "https://api.github.com/repos/alosarjos/bookshelf.koplugin/zipball/%s",
         encoded)
 end
 
@@ -115,7 +115,7 @@ local function httpGetJSON(url, user_agent)
 end
 
 function Updater.offerReleasesPage(message)
-    local url = "https://github.com/AndyHazz/bookshelf.koplugin/releases"
+    local url = "https://github.com/alosarjos/bookshelf.koplugin/releases"
     if Device:canOpenLink() then
         UIManager:show(ConfirmBox:new{
             text = message .. "\n\n" .. _("Open the releases page in a browser?"),
@@ -157,7 +157,7 @@ function Updater.checkBackground(on_update_found)
 
         -- Only fetch the latest release (lightweight)
         local release = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases/latest",
+            "https://api.github.com/repos/alosarjos/bookshelf.koplugin/releases/latest",
             user_agent)
 
         _check_in_flight = false
@@ -242,7 +242,7 @@ function Updater.check(on_success)
 
         -- Fetch all releases to gather notes between installed and latest
         local releases = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases",
+            "https://api.github.com/repos/alosarjos/bookshelf.koplugin/releases",
             user_agent)
         if not releases or #releases == 0 then
             Updater.offerReleasesPage(_("Could not check for updates."))
@@ -587,7 +587,7 @@ function Updater.installLatestStable(on_success)
         local installed_version = Updater.getInstalledVersion()
         local user_agent = "KOReader-Bookshelf/" .. installed_version
         local release = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases/latest",
+            "https://api.github.com/repos/alosarjos/bookshelf.koplugin/releases/latest",
             user_agent)
         if not release or not release.tag_name or release.draft or release.prerelease then
             Updater.offerReleasesPage(_("Could not fetch latest release."))

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/bookshelf-logo-dark.png">
-    <img alt="Bookshelf" src="https://raw.githubusercontent.com/AndyHazz/bookshelf.koplugin/master/assets/bookshelf-logo.png" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/bookshelf-logo-dark.png">
+    <img alt="Bookshelf" src="https://raw.githubusercontent.com/alosarjos/bookshelf.koplugin/master/assets/bookshelf-logo.png" width="320">
   </picture>
 </p>
 
@@ -19,7 +19,7 @@ A friendly home screen for KOReader. Browse your library by series, author, genr
 
 ## Install
 
-1. Download the latest **bookshelf.koplugin.zip** from [Releases](https://github.com/AndyHazz/bookshelf.koplugin/releases).
+1. Download the latest **bookshelf.koplugin.zip** from [Releases](https://github.com/alosarjos/bookshelf.koplugin/releases).
 2. Unzip it onto your device's KOReader plugins folder:
 
    | Device | Plugins folder |
