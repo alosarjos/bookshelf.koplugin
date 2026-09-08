@@ -8785,7 +8785,43 @@ function BookshelfWidget:_gatedRepaint(tokens, debounce)
     end
 end
 
+-- Frontlight polling: KOReader only broadcasts FrontlightStateChanged when
+-- KOReader ITSELF moves the light (gesture, dialog, AutoWarmth). A native
+-- ambient-light sensor driving the hardware directly -- e.g. Kindle's own
+-- auto-brightness, mirrored into PowerD:frontlightIntensity() by a bridge
+-- such as kindle-auto-brightness-bridge -- changes the backlight without
+-- ever firing that event, so the shelf's %light/%light_pct/%warmth tokens
+-- would otherwise sit stale until some unrelated event (wifi, battery, a
+-- gesture) happened to trigger a repaint.
+--
+-- Polls on the same cadence as the fast device-state cache (DEVICE_STATE_TTL)
+-- so it never reads hardware more often than that cache would service anyway,
+-- and only while a visible region actually names one of these tokens -- most
+-- users never touch %light, and this must not become a battery-draining
+-- timer that runs forever on their behalf.
+function BookshelfWidget:_startFrontlightPollTimer()
+    if self._frontlight_poll_fn then return end -- already armed
+    self._frontlight_poll_fn = function()
+        if self:_anyActiveRegionUses(FRONTLIGHT_TOKENS) then
+            _device_state_expires_at = 0
+            self:_gatedRepaint(FRONTLIGHT_TOKENS)
+        end
+        if self._frontlight_poll_fn then
+            UIManager:scheduleIn(DEVICE_STATE_TTL, self._frontlight_poll_fn)
+        end
+    end
+    UIManager:scheduleIn(DEVICE_STATE_TTL, self._frontlight_poll_fn)
+end
+
+function BookshelfWidget:_stopFrontlightPollTimer()
+    if self._frontlight_poll_fn then
+        UIManager:unschedule(self._frontlight_poll_fn)
+        self._frontlight_poll_fn = nil
+    end
+end
+
 function BookshelfWidget:_startStatusTimer()
+    self:_startFrontlightPollTimer()
     if self._status_timer_func then return end -- already armed
     self._status_timer_func = function()
         if self._hero_mode == "micro" and not self._expanded then
@@ -8822,6 +8858,7 @@ function BookshelfWidget:_startStatusTimer()
 end
 
 function BookshelfWidget:_stopStatusTimer()
+    self:_stopFrontlightPollTimer()
     -- Same hook also cancels the BIM-extraction poll — no point watching
     -- BIM while the reader is foregrounded; Bookshelf:show will re-arm
     -- everything on the next render.
