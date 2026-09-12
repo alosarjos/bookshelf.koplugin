@@ -35,8 +35,12 @@ Las mismas que corre `.github/workflows/ci.yml`:
 
 ```sh
 # Sintaxis Lua bajo LuaJIT (el runtime real de KOReader)
+# OJO: `luajit -b <entrada> <salida>` -- con xargs -n1 el fichero se añade
+# como ÚLTIMO argumento, así que "xargs -n1 luajit -b /dev/null" ejecuta
+# luajit -b /dev/null <fichero> y SOBREESCRIBE cada .lua con bytecode
+# compilado de una entrada vacía. Usa -I{} para poner el fichero primero.
 find . -name '*.lua' -not -path './.git/*' -not -path './.claude/*' -print0 \
-  | xargs -0 -n1 luajit -b /dev/null 2>&1 | grep -v '^$'
+  | xargs -0 -I{} luajit -b {} /dev/null
 
 # Suite de tests bajo Lua 5.4 estándar (no LuaJIT: los tests mockean módulos
 # de KOReader y una FFI real chocaría con las cdefs que faltan)
