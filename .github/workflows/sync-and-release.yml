@@ -76,7 +76,13 @@ jobs:
 
       - name: Fetch upstream tag into its own ref namespace
         run: |
-          git fetch upstream "refs/tags/${{ steps.find_tag.outputs.tag }}:refs/upstream-sync/${{ steps.find_tag.outputs.tag }}"
+          # --no-tags is required here: without it, git's automatic tag-follow
+          # still downloads refs/tags/vX.Y.Z locally (into the shared tag
+          # namespace) even though the refspec's destination is
+          # refs/upstream-sync/vX.Y.Z -- the exact collision trap RELEASE.md
+          # documents, just triggered by fetch's default behaviour instead of
+          # an explicit --tags flag. Confirmed the hard way in run 34772511339.
+          git fetch --no-tags upstream "refs/tags/${{ steps.find_tag.outputs.tag }}:refs/upstream-sync/${{ steps.find_tag.outputs.tag }}"
 
       - name: Check whether it is already merged
         id: check_merged
@@ -104,8 +110,13 @@ jobs:
             echo "Could not read version from _meta.lua after merge" >&2
             exit 1
           fi
-          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "Tag v$VERSION already exists in this repo -- stopping, needs manual review" >&2
+          # Check origin directly rather than local refs/tags/*: local tags can
+          # get polluted by git's own auto-tag-follow on fetch (see the
+          # --no-tags comment above) or by other refs fetched this run, and
+          # what actually matters is whether the fork has already published
+          # this version.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists on origin -- stopping, needs manual review" >&2
             exit 1
           fi
 
