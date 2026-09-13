@@ -1,9 +1,35 @@
 # Cómo publicar una release
 
-No hay automatización en CI para esto (`.github/workflows/ci.yml` solo hace
-lint/test, no publica) -- el proceso es manual, reconstruido aquí a partir
-del historial de commits `chore(release): ...` y de las releases ya
-publicadas en GitHub. Sigue estos pasos en orden.
+## Automatizado (happy path)
+
+`.github/workflows/sync-and-release.yml` automatiza todo el proceso de abajo
+para el caso normal: se ejecuta solo cada lunes (y también a mano desde
+Actions → "Sync upstream & release" → "Run workflow", opcionalmente indicando
+`upstream_tag` o unas `notes` concretas). Cuando corre:
+
+1. Busca el último tag de `AndyHazz/bookshelf.koplugin` (o el indicado a mano).
+2. Si ya está fusionado en `master`, no hace nada.
+3. Si no, hace `git merge --no-ff` de ese tag. Usa las traducciones tal como
+   vienen de upstream -- **no** regenera `.pot`/`.po` ni traduce nada a mano
+   (eso solo pasa en el proceso manual, paso 3 de más abajo).
+4. Corre el mismo gate que CI (`.github/actions/checks`): sintaxis LuaJIT,
+   suite de tests, validación de `.po`.
+5. Si todo pasa, empuja el merge a `master`, lee la versión de `_meta.lua`
+   (ya fusionada) y crea el tag `vX.Y.Z`.
+6. Construye el zip con `git archive` y publica la release en GitHub con
+   `gh release create`, con notas auto-generadas a partir de `git log`.
+
+**Solo cubre el happy path.** Si el merge tiene conflictos, si `_meta.lua` no
+trae versión, o si algún check falla, el workflow aborta sin tocar `master`
+ni crear ningún tag, y abre un Issue en el repo pidiendo intervención manual
+(dedupe: no repite el issue si ya hay uno abierto para ese mismo tag). En ese
+caso, sigue el proceso manual completo descrito a partir de aquí -- es el
+mismo que reconstruye el resto de este documento a partir del historial de
+commits `chore(release): ...` y de las releases ya publicadas en GitHub.
+
+## Proceso manual
+
+Sigue estos pasos en orden.
 
 ## 1. Sincronizar con upstream (si aplica)
 

@@ -1,0 +1,186 @@
+name: Sync upstream & release
+
+# Automates the happy path of the manual process documented in RELEASE.md:
+# detect a new upstream (AndyHazz/bookshelf.koplugin) tag not yet merged,
+# merge it into master, run the same gate CI runs, tag and publish the
+# GitHub release with the built zip. Uses whatever translations upstream
+# ships as-is -- no msgmerge/translation step here, unlike the manual
+# process.
+#
+# This only handles the case where upstream's changes apply cleanly and the
+# post-merge checks pass. If the merge conflicts, or a check fails, the
+# workflow aborts without pushing anything, opens an issue, and a human
+# takes over following RELEASE.md.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # every Monday 06:00 UTC -- adjust/remove as needed
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream tag to sync, e.g. v5.0.6 (default: latest upstream tag)'
+        required: false
+        type: string
+      notes:
+        description: 'Release notes override (default: auto-generated from git log)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM_URL: https://github.com/AndyHazz/bookshelf.koplugin.git
+  FORK_REPO: alosarjos/bookshelf.koplugin
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.merge.outputs.should_release }}
+      version: ${{ steps.merge.outputs.version }}
+      upstream_tag: ${{ steps.find_tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+
+      - name: Find upstream tag to sync
+        id: find_tag
+        run: |
+          if [ -n "${{ inputs.upstream_tag }}" ]; then
+            TAG="${{ inputs.upstream_tag }}"
+          else
+            # List upstream's tags without touching local refs/tags/* -- avoids
+            # the tag-collision trap documented in RELEASE.md step 1 (this
+            # fork reuses upstream's version numbers for its own tags).
+            TAG=$(git ls-remote --tags upstream \
+              | grep -oE 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sed 's#refs/tags/##' \
+              | sort -V | tail -n1)
+          fi
+          if [ -z "$TAG" ]; then
+            echo "Could not determine an upstream tag to sync" >&2
+            exit 1
+          fi
+          echo "Upstream tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch upstream tag into its own ref namespace
+        run: |
+          git fetch upstream "refs/tags/${{ steps.find_tag.outputs.tag }}:refs/upstream-sync/${{ steps.find_tag.outputs.tag }}"
+
+      - name: Check whether it is already merged
+        id: check_merged
+        run: |
+          if git merge-base --is-ancestor "refs/upstream-sync/${{ steps.find_tag.outputs.tag }}" HEAD; then
+            echo "Already up to date with ${{ steps.find_tag.outputs.tag }}; nothing to do."
+            echo "already_merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream tag
+        id: merge
+        if: steps.check_merged.outputs.already_merged == 'false'
+        run: |
+          TAG="${{ steps.find_tag.outputs.tag }}"
+          if ! git merge --no-ff "refs/upstream-sync/$TAG" -m "Merge upstream $TAG into fork"; then
+            git merge --abort
+            echo "Merge conflict syncing $TAG -- needs manual resolution (see RELEASE.md)." >&2
+            exit 1
+          fi
+
+          VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' _meta.lua || true)
+          if [ -z "$VERSION" ]; then
+            echo "Could not read version from _meta.lua after merge" >&2
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists in this repo -- stopping, needs manual review" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/checks
+        if: steps.merge.outputs.should_release == 'true'
+
+      - name: Push merge to master
+        if: steps.merge.outputs.should_release == 'true'
+        run: git push origin HEAD:master
+
+      - name: Tag release
+        if: steps.merge.outputs.should_release == 'true'
+        run: |
+          VERSION="${{ steps.merge.outputs.version }}"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Open issue on conflict or failed checks
+        if: failure()
+        run: |
+          TAG="${{ steps.find_tag.outputs.tag }}"
+          TAG="${TAG:-desconocido}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TITLE="Sync con upstream $TAG necesita intervención manual"
+          BODY=$(printf 'El workflow automático de sync no pudo completar el merge o las comprobaciones para `%s`.\n\nRevisa el run: %s\n\nSigue RELEASE.md para resolverlo a mano (lo más probable, un conflicto de merge o un test roto).' "$TAG" "$RUN_URL")
+
+          # Avoid piling up a duplicate issue on every retry of the same tag.
+          EXISTING=$(gh issue list --repo "$FORK_REPO" --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open for $TAG, not duplicating."
+          else
+            gh issue create --repo "$FORK_REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+  release:
+    needs: sync
+    if: needs.sync.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.sync.outputs.version }}
+          fetch-depth: 0
+
+      - name: Build distributable zip
+        run: |
+          git archive --format=zip --prefix=bookshelf.koplugin/ \
+            -o bookshelf.koplugin.zip "v${{ needs.sync.outputs.version }}"
+
+      - name: Generate release notes
+        run: |
+          VERSION="${{ needs.sync.outputs.version }}"
+          if [ -n "${{ inputs.notes }}" ]; then
+            printf '%s\n' "${{ inputs.notes }}" > notes.md
+          else
+            PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | grep -vFx "v$VERSION" | head -n1)
+            {
+              echo "Release del fork \`$FORK_REPO\`, en v$VERSION."
+              echo
+              echo "Sincroniza los cambios de upstream (${{ needs.sync.outputs.upstream_tag }}) sobre este fork."
+              echo
+              echo "Cambios:"
+              if [ -n "$PREV_TAG" ]; then
+                git log --oneline --no-merges "$PREV_TAG..v$VERSION" | sed 's/^/- /'
+              fi
+            } > notes.md
+          fi
+          cat notes.md
+
+      - name: Create GitHub release
+        run: |
+          gh release create "v${{ needs.sync.outputs.version }}" bookshelf.koplugin.zip \
+            --repo "$FORK_REPO" \
+            --title "v${{ needs.sync.outputs.version }}" \
+            --notes-file notes.md

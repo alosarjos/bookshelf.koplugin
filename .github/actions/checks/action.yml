@@ -1,0 +1,52 @@
+name: Plugin checks
+description: >
+  Lua syntax check under LuaJIT, the headless test suite under Lua 5.4, and
+  translation file validation -- the same gate `ci.yml` runs on every push,
+  factored out so `sync-and-release.yml` can reuse it as a pre-tag gate in
+  the same job/workspace as its merge (a broken merge must never reach a
+  tag).
+runs:
+  using: composite
+  steps:
+    - name: Install Lua, LuaJIT and gettext
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y lua5.4 luajit gettext
+
+    # Syntax-check under LuaJIT -- the actual KOReader runtime (5.1 dialect),
+    # so 5.2+/5.4-only syntax that would crash on device is caught here.
+    # -b compiles to bytecode (output discarded); it never executes, so the
+    # FFI cdefs that only exist inside KOReader aren't needed.
+    - name: Lua syntax check (LuaJIT)
+      shell: bash
+      run: |
+        fail=0
+        while IFS= read -r -d '' f; do
+          luajit -b "$f" /dev/null || { echo "syntax FAIL: $f"; fail=1; }
+        done < <(find . -name '*.lua' -not -path './.git/*' -not -path './.claude/*' -print0)
+        exit $fail
+
+    # The headless suite runs under standard Lua (not LuaJIT): the tests mock
+    # KOReader's modules, but a real LuaJIT would use its built-in ffi and trip
+    # over the missing KOReader C declarations. Each test exits non-zero on
+    # failure.
+    - name: Test suite (Lua)
+      shell: bash
+      run: |
+        fail=0
+        for f in tests/_test_*.lua; do
+          echo "== $f =="
+          lua5.4 "$f" || fail=1
+        done
+        exit $fail
+
+    # A malformed .po fails to compile and silently disables that locale on
+    # device (see #215). --check validates format + a few common mistakes.
+    - name: Validate translations
+      shell: bash
+      run: |
+        fail=0
+        for f in locale/*.po; do
+          echo "== $f =="
+          msgfmt --check -o /dev/null "$f" || fail=1
+        done
+        exit $fail
