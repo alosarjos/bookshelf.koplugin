@@ -18,35 +18,52 @@ local M = {}
 --   local t = require-or-dofile("tests/_helpers.lua").runner()
 --   t.test("name", function() assert(...) end)
 --   t.done()
---
--- t.skip(msg), called from inside a t.test callback, marks that case as
--- skipped rather than run (e.g. the fixture it needs isn't available in this
--- environment) without counting it as a failure. Fork-only addition: upstream
--- tests started calling t.skip (tests/_test_tab_font_double_scale.lua) before
--- this runner ever defined it, which only surfaces where the guarded fixture
--- is truly absent (no KOReader tree at /usr/lib/koreader) -- our CI runner,
--- not upstream's own, apparently. Keep this if a future upstream merge
--- touches this function, unless upstream's own version already defines skip.
 function M.runner()
-    local pass, fail = 0, 0
-    return {
+    local pass, fail, skip = 0, 0, 0
+    local skipped = {}
+    local t
+    t = {
         test = function(name, fn)
             local ok, err = pcall(fn)
             if ok then
                 pass = pass + 1
+            elseif type(err) == "table" and err.__skip then
+                pass = pass - 0        -- neither passed nor failed
+                skip = skip + 1
+                skipped[#skipped + 1] = name .. " (" .. tostring(err.why) .. ")"
             else
                 fail = fail + 1
                 io.stderr:write("FAIL  " .. name .. "\n  " .. tostring(err) .. "\n")
             end
         end,
-        skip = function(msg)
-            io.stdout:write("SKIP  " .. tostring(msg) .. "\n")
+        -- A test that cannot run HERE, for a stated reason -- typically that
+        -- the KOReader tree it reads is not installed beside the checkout.
+        --
+        -- Twelve suites called this before it existed. It never bit on a dev
+        -- machine, because the skip branch is the one NOT taken when KOReader
+        -- is present; CI has no KOReader, took the branch, and died on
+        -- "attempt to call a nil value (field 'skip')" -- reported as a
+        -- failure, which is the opposite of what the caller meant.
+        --
+        -- Raises rather than returns: callers write `return t.skip(...)` from
+        -- inside the test body, and a plain return could not tell the runner
+        -- anything. The table marker keeps it clear of a real error(), which
+        -- is always a string here.
+        skip = function(why)
+            error({ __skip = true, why = why or "not applicable here" }, 0)
         end,
         done = function()
-            io.stdout:write(("PASS %d  FAIL %d\n"):format(pass, fail))
+            if skip > 0 then
+                for _i = 1, #skipped do
+                    io.stdout:write("SKIP  " .. skipped[_i] .. "\n")
+                end
+            end
+            io.stdout:write(("PASS %d  FAIL %d%s\n"):format(
+                pass, fail, skip > 0 and ("  SKIP " .. skip) or ""))
             if fail > 0 then os.exit(1) end
         end,
     }
+    return t
 end
 
 -- Assert deep value/sequence equality (scalars + flat arrays); returns got so
