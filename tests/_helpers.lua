@@ -18,6 +18,15 @@ local M = {}
 --   local t = require-or-dofile("tests/_helpers.lua").runner()
 --   t.test("name", function() assert(...) end)
 --   t.done()
+--
+-- t.skip(msg), called from inside a t.test callback, marks that case as
+-- skipped rather than run (e.g. the fixture it needs isn't available in this
+-- environment) without counting it as a failure. Fork-only addition: upstream
+-- tests started calling t.skip (tests/_test_tab_font_double_scale.lua) before
+-- this runner ever defined it, which only surfaces where the guarded fixture
+-- is truly absent (no KOReader tree at /usr/lib/koreader) -- our CI runner,
+-- not upstream's own, apparently. Keep this if a future upstream merge
+-- touches this function, unless upstream's own version already defines skip.
 function M.runner()
     local pass, fail = 0, 0
     return {
@@ -29,6 +38,9 @@ function M.runner()
                 fail = fail + 1
                 io.stderr:write("FAIL  " .. name .. "\n  " .. tostring(err) .. "\n")
             end
+        end,
+        skip = function(msg)
+            io.stdout:write("SKIP  " .. tostring(msg) .. "\n")
         end,
         done = function()
             io.stdout:write(("PASS %d  FAIL %d\n"):format(pass, fail))
