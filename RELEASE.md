@@ -13,7 +13,11 @@ Actions → "Sync upstream & release" → "Run workflow", opcionalmente indicand
    vienen de upstream -- **no** regenera `.pot`/`.po` ni traduce nada a mano
    (eso solo pasa en el proceso manual, paso 3 de más abajo).
 4. Corre el mismo gate que CI (`.github/actions/checks`): sintaxis LuaJIT,
-   suite de tests, validación de `.po`.
+   suite de tests, validación de `.po`. Un test listado en
+   `.github/known_failing_tests.txt` (bug de upstream ya confirmado, no algo
+   que rompió esta fusión) puede fallar sin bloquear el gate -- ver la
+   sección de tests del proceso manual más abajo para cuándo añadir/quitar
+   una entrada ahí.
 5. Si todo pasa, empuja el merge a `master`, lee la versión de `_meta.lua`
    (ya fusionada) y crea el tag `vX.Y.Z`.
 6. Construye el zip con `git archive` y publica la release en GitHub con
@@ -146,24 +150,41 @@ find . -name '*.lua' -not -path './.git/*' -not -path './.claude/*' -print0 \
   | xargs -0 -I{} luajit -b {} /dev/null
 
 # Suite de tests bajo Lua 5.4 estándar (no LuaJIT: los tests mockean módulos
-# de KOReader y una FFI real chocaría con las cdefs que faltan)
-for f in tests/_test_*.lua; do echo "== $f =="; lua5.4 "$f"; done
+# de KOReader y una FFI real chocaría con las cdefs que faltan). LC_ALL=C es
+# importante: varios tests son sensibles al locale del sistema (agrupación
+# por idioma, nombres de carpetas traducidos) y GitHub Actions corre en C/
+# C.UTF-8 -- un shell local en es_ES.UTF-8 (u otro no-C) puede dar falsos
+# positivos o falsos negativos que no reproducen lo que ve CI.
+for f in tests/_test_*.lua; do echo "== $f =="; LC_ALL=C lua5.4 "$f"; done
 
 # Traducciones (ver paso 3.5)
 for f in locale/*.po; do msgfmt --check -o /dev/null "$f"; done
 ```
 
 Si algún test falla, antes de bloquear la release comprueba si es una
-regresión real: reproduce el mismo test contra el último tag publicado
-(`git worktree add /tmp/check vX.Y.Z && lua5.4 /tmp/check/tests/_test_foo.lua`).
-Si ya fallaba antes de tus cambios, es un fallo preexistente y no bloquea --
-pero repórtalo.
+regresión real:
 
-> **Conocido a fecha de v5.0.3**: `tests/_test_book_repository.lua` (2
-> aserciones sobre agrupación por idioma/rating) y `tests/_test_stack_display.lua`
-> (crashea con `attempt to concatenate a nil value`) fallan de forma
-> preexistente, confirmado ya roto en v4.7.0. Si siguen rotos, no son un
-> nuevo problema; si se han arreglado, borra este aviso.
+1. Reprodúcelo con `LC_ALL=C` primero -- descarta que sea un artefacto del
+   locale de tu shell (ver nota de arriba) antes de investigar nada más.
+2. Si persiste, reproduce el mismo test contra el último tag publicado del
+   fork (`git worktree add /tmp/check vX.Y.Z && LC_ALL=C lua5.4 /tmp/check/tests/_test_foo.lua`).
+   Si ya fallaba antes de tus cambios, es un fallo preexistente del fork.
+3. Si el fallo llegó con la fusión de un tag de upstream nuevo, reproduce
+   también contra un checkout limpio de ESE tag de upstream, sin nada del
+   fork encima (`git worktree add /tmp/check_upstream refs/upstream-tags/vX.Y.Z`
+   -- o el tag que tengas fetcheado). Si falla igual ahí, es un bug de
+   upstream, no algo que rompió la fusión.
+
+Un fallo preexistente (fork o upstream) no bloquea la release manual -- pero
+repórtalo. Para el workflow automático (`sync-and-release.yml`) sí bloquea,
+salvo que el fichero de test esté listado en
+`.github/known_failing_tests.txt`: ese fichero es la vía de escape para un
+bug de upstream confirmado (no algo que rompió una fusión de este fork) que
+si no, bloquearía todos los syncs futuros, no solo el de ese momento. Añade
+una entrada ahí (con el porqué y cómo se confirmó) en vez de bloquear
+manualmente cada semana, y bórrala en cuanto upstream lo arregle -- el test
+se sigue ejecutando siempre, así que un PASS es la señal de que ya toca
+quitarla.
 
 ## 5. Tag y push
 
