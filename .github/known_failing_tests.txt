@@ -14,11 +14,6 @@
 # a failure gets triaged before landing here.
 #
 # format: one tests/_test_*.lua basename per line, '#' comments allowed.
-
-# v5.1.0: stale assertion. The row-selection border test expects a literal
-# `bordersize = BORDER`, but v5.1.0's over_ground refactor routes it through
-# an intermediate `card_border` local that's conditionally zeroed -- the
-# geometry invariant the comment describes still holds (padding absorbs the
-# difference), the test's source-matching regex just didn't get updated for
-# the new local. Confirmed broken on a clean `v5.1.0` upstream checkout.
-_test_list_row_budget.lua
+#
+# (empty right now -- the v5.1.0 _test_list_row_budget.lua entry was removed
+# in v5.1.1, once upstream's own fix landed and it started reporting PASS.)
