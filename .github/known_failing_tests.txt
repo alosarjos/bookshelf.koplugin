@@ -1,0 +1,24 @@
+# Test files allowed to fail without blocking CI or the automated release
+# (sync-and-release.yml). Every entry here must be a bug confirmed on a
+# CLEAN upstream checkout (not just this fork) -- verify with:
+#   git worktree add /tmp/check <upstream-tag>
+#   lua5.4 /tmp/check/tests/_test_foo.lua
+# before adding a line, and remove the line the moment upstream ships a fix
+# (the runner still executes these tests every run, so a fixed one starts
+# reporting PASS again -- that's your cue to delete it here).
+#
+# Without this, any test upstream ships broken (on their own checkout, not
+# from anything this fork did) would block every future sync forever, since
+# the gate can't otherwise tell "pre-existing upstream bug" from "our merge
+# broke something". See RELEASE.md for the manual-release fallback and how
+# a failure gets triaged before landing here.
+#
+# format: one tests/_test_*.lua basename per line, '#' comments allowed.
+
+# v5.1.0: stale assertion. The row-selection border test expects a literal
+# `bordersize = BORDER`, but v5.1.0's over_ground refactor routes it through
+# an intermediate `card_border` local that's conditionally zeroed -- the
+# geometry invariant the comment describes still holds (padding absorbs the
+# difference), the test's source-matching regex just didn't get updated for
+# the new local. Confirmed broken on a clean `v5.1.0` upstream checkout.
+_test_list_row_budget.lua
