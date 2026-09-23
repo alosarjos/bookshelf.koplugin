@@ -123,6 +123,10 @@ end
 -- in play we fall back to the exact per-book probe (rare: only if a hash
 -- sidecar tree exists or it's the preferred location).
 local _dir_entry_cache = {}
+-- See _sidecarIsOnlyLocation. Declared up here so the invalidation below
+-- reaches it: declared where it is used, it was invisible to this function,
+-- which cleared a global of the same name instead.
+local _only_location
 local function _invalidateCustomMetaGate()
     _dir_entry_cache = {}
     _only_location   = nil
@@ -177,8 +181,8 @@ end
 -- True when the sibling ".sdr" is the ONLY place a custom_metadata.lua could
 -- live, so finding nothing there is a definitive no rather than a reason to go
 -- looking elsewhere. None of it varies per book, so it is resolved once and
--- dropped with the rest of the gate state.
-local _only_location
+-- dropped with the rest of the gate state (_only_location is declared above
+-- _invalidateCustomMetaGate).
 local function _sidecarIsOnlyLocation()
     if _only_location ~= nil then return _only_location end
     local only = true
@@ -1145,6 +1149,11 @@ function Repo.buildBookMeta(filepath, opts)
     -- hardcover); with none set, auto priority Calibre > embedded. The Hardcover
     -- override (when chosen, or auto + sync) is applied later by enrichBook.
     local genres, genre_sources = genreData(filepath, cb, info, cp)
+    -- Calibre's series name, for rebuilding the raw "Name #n" string below.
+    -- It was read there without ever being defined in this function (the
+    -- light-meta builder has its own), so a Calibre-only series never got one.
+    local cb_series = cb and type(cb.series) == "string" and cb.series ~= ""
+                      and cb.series or nil
 
     local book = {
         filepath    = filepath,
@@ -1423,13 +1432,14 @@ local _progress_cache, PROGRESS_CACHE_TTL
 -- it had just been working on. The comment above buildBook's seed already
 -- demanded the two mirror each other; this makes it structural rather than a
 -- promise.
-local function _writeProgressCache(filepath, pct, status, rating, page_count, page_num)
+local function _writeProgressCache(filepath, pct, status, rating, page_count, page_num, page_src)
     _progress_cache[filepath] = {
         pct        = pct,
         status     = status,
         rating     = rating,
         page_count = page_count,
         page_num   = page_num,
+        page_src   = page_src,
         expires_at = os.time() + PROGRESS_CACHE_TTL,
     }
 end
@@ -1567,14 +1577,18 @@ function Repo.buildBook(filepath, opts)
     -- page_count nil) because it doubles as the progress-cache seed
     -- below, which must match what readProgress would compute for this
     -- file - readProgress never sees BIM's count.
-    local ds_page_count
+    local ds_page_count, ds_page_src
     do
         local stable_pages = ds:readSetting("pagemap_doc_pages")
-        if stable_pages then ds_page_count = tonumber(stable_pages) end
+        if stable_pages then
+            ds_page_count = tonumber(stable_pages)
+            if ds_page_count then ds_page_src = "stable" end
+        end
         if not ds_page_count then
             local stats = ds:readSetting("stats")
             if type(stats) == "table" and stats.pages then
                 ds_page_count = tonumber(stats.pages)
+                if ds_page_count then ds_page_src = "render" end
             end
         end
     end
@@ -1636,8 +1650,13 @@ function Repo.buildBook(filepath, opts)
     -- by book.page_count rather than fallback_page_count, and those differ
     -- only for a book BIM counted, which is fixed-layout and reaches an exact
     -- rung long before the division.
+    -- And the same page_src readProgress would report for it.
+    if not ds_page_src and fallback_page_count then
+        ds_page_src = (pageCountFromFilename(filepath) == fallback_page_count)
+                      and "filename" or "store"
+    end
     _writeProgressCache(filepath, tonumber(book.book_pct), book.status,
-                        book.rating, fallback_page_count, book.page_num)
+                        book.rating, fallback_page_count, book.page_num, ds_page_src)
     return book
 end
 
@@ -2439,9 +2458,12 @@ function Repo.readProgress(filepath)
     local cached = _progress_cache[filepath]
     if cached then
         return cached.pct, cached.status, cached.rating, cached.page_count,
-               cached.page_num
+               cached.page_num, cached.page_src
     end
-    local pct, status, rating, page_count, page_num
+    -- page_src: which rung answered the page count -- "stable", "render",
+    -- "store" or "filename". The sixth return; the spine's thickness needs
+    -- to know (issue 387, SpineShelf.thicknessPages).
+    local pct, status, rating, page_count, page_num, page_src
     local ok_ds, ds = pcall(function() return getDocSettings():open(filepath) end)
     if ok_ds and ds then
         local ok_pct, p = pcall(ds.readSetting, ds, "percent_finished")
@@ -2452,11 +2474,15 @@ function Repo.readProgress(filepath)
             rating = tonumber(summary.rating)
         end
         local ok_pm, stable_pages = pcall(ds.readSetting, ds, "pagemap_doc_pages")
-        if ok_pm and stable_pages then page_count = tonumber(stable_pages) end
+        if ok_pm and stable_pages then
+            page_count = tonumber(stable_pages)
+            if page_count then page_src = "stable" end
+        end
         if not page_count then
             local ok_st, stats = pcall(ds.readSetting, ds, "stats")
             if ok_st and type(stats) == "table" and stats.pages then
                 page_count = tonumber(stats.pages)
+                if page_count then page_src = "render" end
             end
         end
         -- CURRENT page, in buildBook's own precedence, so a shelf row and the
@@ -2484,13 +2510,17 @@ function Repo.readProgress(filepath)
         local ok_ss, SS = pcall(require, "lib/bookshelf_spine_shelf")
         if ok_ss and SS and SS.cachedProgress then
             local pp = select(1, SS.cachedProgress(filepath))
-            if pp then page_count = tonumber(pp) end
+            if pp then
+                page_count = tonumber(pp)
+                if page_count then page_src = "store" end
+            end
         end
     end
     -- #159: last-resort filename fallback (see pageCountFromFilename), matching
     -- buildBook's progress-cache seed so the sort key / badge agree.
     if not page_count then
         page_count = pageCountFromFilename(filepath)
+        if page_count then page_src = "filename" end
     end
     -- Normalise to bookshelf canonical status values. KOReader's End-of-book
     -- dialog and Book Status widget store 'complete' / 'abandoned' in
@@ -2512,8 +2542,8 @@ function Repo.readProgress(filepath)
         if n < 1 then n = 1 end
         page_num = n
     end
-    _writeProgressCache(filepath, pct, status, rating, page_count, page_num)
-    return pct, status, rating, page_count, page_num
+    _writeProgressCache(filepath, pct, status, rating, page_count, page_num, page_src)
+    return pct, status, rating, page_count, page_num, page_src
 end
 
 -- Repo.progressFor(filepath) -> pct, status, rating, page_count, opened, page_num
@@ -3609,12 +3639,6 @@ function Repo.folderHasBooks(path)
     return false
 end
 
--- clearFolderHasBooksCache(): call after a tab switch so the next getAll
--- scan picks up any files added during the session.
-function Repo.clearFolderHasBooksCache()
-    _folderHasBooks_cache = {}
-end
-
 -- folderCoverPaths(path, sort_priority, limit, opts) -> filepaths
 --
 -- The books a folder TILE should show, in the order the folder itself would
@@ -3795,14 +3819,6 @@ function Repo.getFolderBookPaths(path)
     return out
 end
 
--- _makeAllSort(sort_key): factory for the All-tab comparator. After v1.2
--- this is a thin wrapper over SortEngine using Repo.getSortPriority("all")
--- -- the sort_key argument is ignored. Kept for call-site compatibility;
--- can be deleted when callers migrate to passing tab_id.
-local function _makeAllSort(_sort_key)
-    return SortEngine.chainedComparator(Repo.getSortPriority("all"))
-end
-
 -- getAll(path, limit, offset, sort_priority) → (items, total)
 -- limit/offset let callers fetch a single page slice without hydrating the
 -- full list. total is always the full item count (from cache or fresh scan)
@@ -3978,6 +3994,8 @@ function Repo.getAll(path, limit, offset, sort_priority, filter, opts)
     local cache_key = table.concat({
         path, table.concat(prio_parts, ","),
         reverse and "R" or "", mixed and "M" or "",
+        -- How the keys themselves are derived (pinyin, leading articles).
+        SortEngine.keySignature(),
     }, "\0")
     local now   = os.time()
     local entry = _all_cache[cache_key]
@@ -5754,6 +5772,10 @@ local function _buildGroups(group_kind, key_fn, multi, records)
                                 title        = book.title,
                                 series_name  = book.series_name,
                                 series_index = tonumber(book.series_num),
+                                -- The number as written, for the spine's
+                                -- foot (issue 444: members of an author
+                                -- group showed no number).
+                                series_num   = book.series_num,
                                 author       = book.author,
                                 authors      = book.authors,
                                 genres       = book.genres,
@@ -5827,6 +5849,7 @@ local function _cacheGroupShapes(list, kind)
                 title        = b.title,
                 series_name  = b.series_name,
                 series_index = b.series_index,
+                series_num   = b.series_num,
                 author       = b.author,
                 authors      = b.authors,
                 genres       = b.genres,
@@ -5936,15 +5959,41 @@ end
 -- Costs nothing the Home chip was not already paying: the walk is the cached
 -- one every fetcher shares, and records come from the batched blob-free light
 -- map, so a whole shelf costs no cover decode at all.
+-- opts.root: the folder whose contents to section, when it is not the whole
+-- library -- a folder drilled into, or a shelf sourced to one. Its books
+-- spill out as labelled runs exactly as Home's do, never as a folder standing
+-- on the shelf edge-on like a book (maintainer: "we can't show folders as
+-- books"). Under the library root it reuses the library's own walk and
+-- light-meta cache, so opening a folder costs no second pass over the disk;
+-- a folder outside it is walked on its own.
 function Repo.getFolderSections(limit, offset, sort_priority_override, filter, opts)
     local _t0 = _gettime()
-    local root = _resolveLibraryRoot()
+    local lib_root = _resolveLibraryRoot()
+    local root = (opts and opts.root) or lib_root
     if not root then
         logger.warn("[bookshelf] getFolderSections: home_dir not configured; refusing to walk")
         return {}, 0
     end
+    while #root > 1 and root:sub(-1) == "/" do root = root:sub(1, -2) end
     local depth = BookshelfSettings.read("latest_walk_depth") or 3
-    local walk  = cachedWalk(root, depth)
+    local walk_root = root
+    if lib_root and root ~= lib_root then
+        local lr = lib_root
+        while #lr > 1 and lr:sub(-1) == "/" do lr = lr:sub(1, -2) end
+        if root:sub(1, #lr + 1) == lr .. "/" then walk_root = lr end
+    end
+    local walk = cachedWalk(walk_root, depth)
+    if walk_root ~= root then
+        local prefix, inside = root .. "/", {}
+        for i = 1, #walk do
+            local c = walk[i]
+            local fp = c and (c.fp or c)
+            if type(fp) == "string" and fp:sub(1, #prefix) == prefix then
+                inside[#inside + 1] = c
+            end
+        end
+        walk = inside
+    end
     local FolderSections = require("lib/bookshelf_folder_sections")
     local sections = FolderSections.group(walk, root)
     -- KOReader's "folders and files mixed", which getAll honours for the
@@ -5989,7 +6038,7 @@ function Repo.getFolderSections(limit, offset, sort_priority_override, filter, o
     -- the point of showing the structure at all.
     local sp = sort_priority_override
     if not sp or #sp == 0 then sp = Repo.getSortPriority("all") end
-    local light_cache = _getLightMetaCache(root, depth)
+    local light_cache = _getLightMetaCache(walk_root, depth)
     local ordered = {}
     for si = 1, #sections do
         local s = sections[si]
@@ -6641,6 +6690,7 @@ local function _buildRatingGroups()
                 title        = book.title,
                 series_name  = book.series_name,
                 series_index = tonumber(book.series_num),
+                series_num   = book.series_num,
                 author       = book.author,
                 authors      = book.authors,
                 genres       = book.genres,
@@ -7026,6 +7076,9 @@ local function _bySourceCacheKey(source, filter, sort_priority)
             parts[#parts + 1] = "s:" .. level.key .. ":" .. (level.reverse and "r" or "f")
         end
     end
+    -- How the keys themselves are derived (pinyin, leading articles): not a
+    -- sort level, but it changes the order all the same.
+    parts[#parts + 1] = "k:" .. SortEngine.keySignature()
     return table.concat(parts, "|")
 end
 
@@ -7622,8 +7675,19 @@ function Repo.getBySource(source, filter, sort_priority, offset, limit, opts)
     -- shelf -- so a folder becomes a badged run of its own books rather than
     -- a single drillable spine. Cover and list keep getAll's tree view, where
     -- folder styles and drill-in live. See Repo.getFolderSections.
-    if kind == "all" and Repo.spine_light then
-        return Repo.getFolderSections(limit, offset, sort_priority, filter, opts)
+    --
+    -- A FOLDER source too (a folder drilled into from the cover view, or a
+    -- shelf pinned to one): it went to getAll, so its subfolders stood on the
+    -- spine shelf as book-like spines, which is what issue 420 reported.
+    -- Sectioned from that folder down instead.
+    if (kind == "all" or kind == "folder") and Repo.spine_light then
+        local sopts = opts
+        if kind == "folder" and source.id then
+            sopts = {}
+            for k, v in pairs(opts or {}) do sopts[k] = v end
+            sopts.root = source.id
+        end
+        return Repo.getFolderSections(limit, offset, sort_priority, filter, sopts)
     end
     if not has_status_filter then
         if kind == "all"       then return Repo.getAll(nil, limit, offset, sort_priority, nil, opts)       end
@@ -7844,14 +7908,30 @@ function Repo.getBySource(source, filter, sort_priority, offset, limit, opts)
         elseif kind == "collection" then
             local rc  = require("readcollection")
             local set = {}
+            -- The collection's OWN order, which is what KOReader files it by
+            -- (ReadCollection:getOrderedCollection sorts on this field). Kept
+            -- separate from `set` rather than stored in it: KOReader writes
+            -- `order` only for a manually collated collection, so for any
+            -- other one it is nil for every item, and a nil in the membership
+            -- table would read as "not a member" and empty the shelf.
+            local order = {}
             local coll = rc.coll and rc.coll[source.id]
             if type(coll) == "table" then
                 for _i, item in pairs(coll) do
-                    if type(item) == "table" and item.file then set[item.file] = true end
+                    if type(item) == "table" and item.file then
+                        set[item.file]   = true
+                        order[item.file] = item.order
+                    end
                 end
             end
             candidates = loadCandidatesByPredicate(function(b) return set[b.filepath] end,
                 nil, true)
+            -- Stamped onto the record so the collection_order sort key can see
+            -- it; the records come out of the library store, which knows
+            -- nothing about collections (issue 441).
+            for _i, b in ipairs(candidates) do
+                b.collection_order = order[b.filepath]
+            end
         elseif kind == "tag" then
             -- Book records carry BIM/Calibre tag data under b.genres (the
             -- field name is unified across the cb.tags + cb.keywords +

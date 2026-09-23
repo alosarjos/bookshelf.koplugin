@@ -178,7 +178,16 @@ local SOURCE_SORT_DEFAULTS = {
     folder_flat   = { { key = "author_surname",  reverse = false },
                       { key = "series_name",     reverse = false },
                       { key = "series_index",    reverse = false } },
-    collection    = { { key = "last_opened",     reverse = true  } },
+    -- A collection is the one book source with an order of its own: KOReader
+    -- stores a per-item `order` and files the collection by it. Level two
+    -- carries the collections it stores no order for -- only a manually
+    -- collated one persists it -- where every book ties on level one and the
+    -- shelf comes out as it always did (issue 441).
+    collection    = { { key = "collection_order", reverse = false },
+                      { key = "last_opened",      reverse = true  } },
+    -- NOT collection_order, although a pinned tag chip is also kind
+    -- "collection": the id is a tag name, there is rarely a KOReader
+    -- collection behind it, and a tag has no curated order to preserve.
     tag           = { { key = "last_opened",     reverse = true  } },
     genre         = { { key = "author_surname",  reverse = false },
                       { key = "series_name",     reverse = false },
@@ -286,16 +295,28 @@ local function _kindleOpenableFormats()
     return allowed
 end
 
+-- Editor.sourceSortDefaults(kind) -> a fresh { {key, reverse}, ... }, or nil.
+--
+-- Public because chips are created in more than one place: the collection
+-- manager pins one straight into the tab list without building a draft, and
+-- carrying its own copy of the collection default is how the two drifted.
+-- Always a copy -- the caller stores it on a tab the reader then edits, and a
+-- reference would let a toggled `reverse` rewrite the default for every chip
+-- made afterwards.
+function Editor.sourceSortDefaults(kind)
+    local defaults = kind and SOURCE_SORT_DEFAULTS[kind]
+    if not defaults then return nil end
+    local copy = {}
+    for i, level in ipairs(defaults) do
+        copy[i] = { key = level.key, reverse = level.reverse }
+    end
+    return copy
+end
+
 local function _applySourceDefaults(draft)
     local kind = draft.source and draft.source.kind
-    local defaults = kind and SOURCE_SORT_DEFAULTS[kind]
-    if defaults then
-        -- Deep copy so the SOURCE_SORT_DEFAULTS table isn't mutated when
-        -- the user later toggles a level's reverse via the picker.
-        local copy = {}
-        for i, level in ipairs(defaults) do
-            copy[i] = { key = level.key, reverse = level.reverse }
-        end
+    local copy = Editor.sourceSortDefaults(kind)
+    if copy then
         draft.sort_priority = copy
     end
     -- A new Kindle chip starts with the formats KOReader cannot open filtered
@@ -363,8 +384,29 @@ local GROUP_KINDS = {
 -- Override here for clarity. Used by both the picker buttons and the
 -- editor's Sort-row button text_func so the displayed label matches
 -- what the user picked.
+--
+-- `series_name` is not only the series key: the sort engine uses that field
+-- as the GROUP CARD's name for every group shape (see its comment at
+-- "5. b.series_name -- group shape (Authors / Genres tab)"). So one label
+-- covered both a thing's name and a PERSON's, and English is unusually
+-- relaxed about that. Slovak is not -- meno for a person, nazov for a thing --
+-- and nor are Czech, Polish, Russian, Ukrainian or German, so a translator
+-- had to pick one and be wrong elsewhere (issue 432, from the Slovak
+-- translator reviewing the catalogue).
+--
+-- Split by what is being named rather than per tab: the Authors shelf is the
+-- only group whose cards are people, and "Full name" pairs with the Surname
+-- option sitting next to it. Everything else is a thing and keeps "Name",
+-- which is now unambiguous because the collection dialog no longer shares it.
+local GROUP_LEVEL1_NAME_BY_KIND = {
+    authors = function() return _("Full name") end,
+}
 local GROUP_LEVEL1_LABEL = {
-    series_name    = function() return _("Name") end,
+    series_name    = function(kind)
+        local person = GROUP_LEVEL1_NAME_BY_KIND[kind or ""]
+        if person then return person() end
+        return _("Name")
+    end,
     author_surname = function() return _("Surname") end,
     last_opened    = function() return _("Most recently read") end,
     date_added     = function() return _("Most recently added") end,
@@ -443,7 +485,9 @@ end
 local function _resolveSortLabel(level_index, key, source_kind)
     local is_group = GROUP_KINDS[source_kind or ""] or false
     if is_group and level_index == 1 and GROUP_LEVEL1_LABEL[key] then
-        return GROUP_LEVEL1_LABEL[key]()
+        -- kind is passed through: the name label depends on whether the
+        -- cards are people or things (issue 432).
+        return GROUP_LEVEL1_LABEL[key](source_kind)
     end
     local SortEngine = require("lib/bookshelf_sort_engine")
     local k = SortEngine.KEYS[key]
@@ -494,12 +538,24 @@ function Editor:editTab(tab_id, opts)
     --   visual_dirty - label / icon changes (chip strip repaints but the
     --                  underlying book lists are unaffected; cache stays
     --                  valid).
-    -- Cancel / Save invalidate the book cache only when data_dirty;
-    -- on_change fires when either flag is set. "Open, close untouched"
-    -- is near-instant (both false).
+    -- Neither Save nor Cancel invalidates the book cache: the per-source
+    -- result cache is keyed on (source, filter, sort_priority), so an edit to
+    -- any of those is a NEW key and misses on its own (see Save's comment).
+    -- This header used to say both invalidated when data_dirty; they never
+    -- did, and trusting it is how an arrangement shipped that only a swipe
+    -- down would show. on_change fires when either flag is set. "Open, close
+    -- untouched" is near-instant (both false).
     local data_dirty   = false
     local visual_dirty = false
     local function is_dirty() return data_dirty or visual_dirty end
+    -- A confirmed arrangement of the collection, from the sort picker's "Edit
+    -- collection order". Not draft state: it is written to KOReader the moment
+    -- it is confirmed (and drops the book cache itself), so backing out of
+    -- this editor does not undo it -- which means every way out, Cancel
+    -- included, has to repaint the shelf to show it. Not part of is_dirty()
+    -- either, because that also gates writing the TAB, which did not change.
+    local arranged = false
+    local function repaintOnCancel() return visual_dirty or arranged end
 
     -- applyLivePreview(affects_data):
     --   affects_data = false (label / icon): live-preview the change by
@@ -536,6 +592,22 @@ function Editor:editTab(tab_id, opts)
     end
     local function cancelPreview()
         UIManager:unschedule(firePreview)
+    end
+    -- A confirmed arrangement (see `arranged` above). The order is written the
+    -- moment the arrange window closes, so the shelf behind shows it then --
+    -- through the debounced preview, so the confirm tap is not held up by a
+    -- shelf rebuild -- rather than only once the whole editor is closed
+    -- (maintainer, on the PW5). `arranged` stays set as well: a close inside
+    -- the debounce window cancels the preview, and the close paths repaint
+    -- in its place.
+    --
+    -- Declared HERE, below schedulePreview, and not beside `arranged`: a
+    -- local function resolves the names in its body where it is written, so
+    -- above this point schedulePreview would be a nil global at the moment of
+    -- the confirm.
+    local function onArranged()
+        arranged = true
+        schedulePreview()
     end
     local function applyLivePreview(affects_data)
         if affects_data then
@@ -787,19 +859,19 @@ function Editor:editTab(tab_id, opts)
                 {
                     text_func = function() return _sortButtonText(draft, 1) end,
                     callback = function()
-                        Editor:_pickSortLevel(draft, 1, function() applyLivePreview(true); rebuild() end)
+                        Editor:_pickSortLevel(draft, 1, function() applyLivePreview(true); rebuild() end, onArranged)
                     end,
                 },
                 {
                     text_func = function() return _sortButtonText(draft, 2) end,
                     callback = function()
-                        Editor:_pickSortLevel(draft, 2, function() applyLivePreview(true); rebuild() end)
+                        Editor:_pickSortLevel(draft, 2, function() applyLivePreview(true); rebuild() end, onArranged)
                     end,
                 },
                 {
                     text_func = function() return _sortButtonText(draft, 3) end,
                     callback = function()
-                        Editor:_pickSortLevel(draft, 3, function() applyLivePreview(true); rebuild() end)
+                        Editor:_pickSortLevel(draft, 3, function() applyLivePreview(true); rebuild() end, onArranged)
                     end,
                 },
             }
@@ -1012,7 +1084,7 @@ function Editor:editTab(tab_id, opts)
                         local _t1 = _gettime()
                         UIManager:close(dialog)
                         local _t2 = _gettime()
-                        if visual_dirty and opts.on_change then opts.on_change() end
+                        if repaintOnCancel() and opts.on_change then opts.on_change() end
                         local _t3 = _gettime()
                         logger.dbg(string.format(
                             "[bookshelf perf] editor-cancel: data_dirty=%s visual_dirty=%s clearOverride=%.0fms close=%.0fms on_change=%.0fms TOTAL=%.0fms",
@@ -1061,7 +1133,7 @@ function Editor:editTab(tab_id, opts)
                         local _t3 = _gettime()
                         UIManager:close(dialog)
                         local _t4 = _gettime()
-                        if is_dirty() and opts.on_change then opts.on_change() end
+                        if (is_dirty() or arranged) and opts.on_change then opts.on_change() end
                         local _t5 = _gettime()
                         logger.dbg(string.format(
                             "[bookshelf perf] editor-save: data_dirty=%s visual_dirty=%s clearOverride=%.0fms TabModel.save=%.0fms invalidate=%.0fms close=%.0fms on_change=%.0fms TOTAL=%.0fms",
@@ -1178,7 +1250,7 @@ function Editor:editTab(tab_id, opts)
                 cancelPreview()
                 TabModel.clearOverride()
                 UIManager:close(dialog)
-                if visual_dirty and opts.on_change then opts.on_change() end
+                if repaintOnCancel() and opts.on_change then opts.on_change() end
             end,
         }
 
@@ -1240,7 +1312,7 @@ function Editor:editTab(tab_id, opts)
             -- Tap-outside-close == Cancel.
             TabModel.clearOverride()
             UIManager:close(self_d)
-            if visual_dirty and opts.on_change then opts.on_change() end
+            if repaintOnCancel() and opts.on_change then opts.on_change() end
         end
         return true
     end
@@ -3020,16 +3092,12 @@ function Editor:_pickFolderFilter(draft, on_close)
     UIManager:show(d)
 end
 
--- _pickStatusFilter -- back-compat shim; routes through the generic picker.
-function Editor:_pickStatusFilter(draft, on_close)
-    Editor:_pickMultiFilter(draft, "statuses", on_close)
-end
 -- _pickSortLevel -- single-level sort key picker.
 -- Opens a ButtonDialog listing all sort keys. Tapping an already-selected key
 -- toggles its reverse flag. Tapping "(none)" clears the slot.
 -- level_index is 1 or 2 (Sort 1 / Sort 2); L3+ is preserved in the data
 -- array but not exposed in the main editor dialog.
-function Editor:_pickSortLevel(draft, level_index, on_close)
+function Editor:_pickSortLevel(draft, level_index, on_close, on_arranged)
     local current = draft.sort_priority and draft.sort_priority[level_index]
     local d
     local kind = draft.source and draft.source.kind
@@ -3123,6 +3191,36 @@ function Editor:_pickSortLevel(draft, level_index, on_close)
               key_btn("book_count") },
             { clear_btn, close_btn },
         }
+        -- A collection is the only book source carrying an order of its own,
+        -- and on one that has it, it is the order the reader arranged by hand
+        -- in KOReader -- so it leads. Added here rather than in the grid
+        -- above so no other source pays a row for a key that would be nil for
+        -- every book on its shelf (issue 441).
+        if kind == "collection" then
+            local row = { key_btn("collection_order") }
+            -- Beside it, the way to CHANGE that order, which otherwise meant
+            -- leaving for KOReader's collections view. Only when a collection
+            -- is really behind the chip: a pinned tag is kind "collection" too,
+            -- with nothing to arrange.
+            --
+            -- Opened over this picker rather than instead of it, so confirming
+            -- or backing out of the arrange window lands the reader here, by
+            -- the key. A confirm drops the book cache (CollectionOrder.save)
+            -- and calls on_arranged, which tells editTab to repaint the shelf
+            -- on the way out -- Cancel included, since the arrangement is
+            -- already written. An earlier version of this comment claimed the
+            -- editor invalidated the cache on close; it does not, and the
+            -- shelf kept the old order until a swipe down.
+            local CollectionOrder = require("lib/bookshelf_collection_order")
+            local coll_id = draft.source and draft.source.id
+            if CollectionOrder.exists(coll_id) then
+                row[2] = {
+                    text     = _("Edit collection order"),
+                    callback = function() CollectionOrder.arrange(coll_id, on_arranged) end,
+                }
+            end
+            table.insert(rows, 1, row)
+        end
     end
 
     local title

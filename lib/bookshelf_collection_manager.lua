@@ -154,7 +154,11 @@ local function _pinAsChip(coll_name, bw)
         icon          = nil,
         source        = { kind = "collection", id = coll_name },
         filter        = {},
-        sort_priority = { { key = "last_opened", reverse = true } },
+        -- The editor owns the per-source defaults; a second copy here is how
+        -- a collection pinned from the manager ended up sorted differently
+        -- from the same collection picked in the editor (issue 441).
+        sort_priority = require("lib/bookshelf_chip_editor")
+                            .sourceSortDefaults("collection"),
         enabled       = true,
     }
     TabModel.save(tabs)
@@ -437,7 +441,15 @@ function CollectionManager.show(opts)
         local input
         input = InputDialog:new{
             title       = _("New collection"),
-            input_hint  = _("Name"),
+            -- "Collection name", not a bare "Name". That msgid was shared
+            -- with the group-order sort label, where it means a PERSON's name
+            -- on the Authors shelf -- and a language that distinguishes the
+            -- two can only render one of them (Slovak: meno for a person,
+            -- nazov for a thing; Czech, Polish, Russian, Ukrainian and German
+            -- split the same way). Reported by the Slovak translator, who
+            -- could see it from the catalogue but not fix it there (issue
+            -- 432). Naming what is being named also reads better here.
+            input_hint  = _("Collection name"),
             buttons = {{
                 { text = _("Cancel"), id = "close",
                   callback = function() UIManager:close(input) end },
