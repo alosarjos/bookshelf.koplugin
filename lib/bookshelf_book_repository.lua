@@ -1431,6 +1431,10 @@ end
 -- caches further down, but buildBook (below) seeds it from the
 -- DocSettings handle it opens, and Lua upvalue scoping needs the local
 -- to exist before that function body is compiled.
+-- When each book was marked finished (its sidecar's summary.modified), or
+-- false for none: the reading goal counts a book in the year it was finished.
+-- readProgress fills it from the sidecar it already has open.
+local _finished_on = {}
 local _progress_cache, PROGRESS_CACHE_TTL
 
 -- _writeProgressCache(filepath, pct, status, rating, page_count, page_num)
@@ -2443,6 +2447,7 @@ function Repo.invalidateProgressCache(filepath)
     if filepath then
         _progress_cache[filepath] = nil
         _sidecar_memo[filepath] = nil
+        _finished_on[filepath] = nil
         for _key, entry in pairs(_light_meta_cache) do
             if entry and entry.map then
                 local rec = entry.map[filepath]
@@ -2458,6 +2463,7 @@ function Repo.invalidateProgressCache(filepath)
     else
         _progress_cache = {}
         _sidecar_memo = {}
+        _finished_on = {}
         for _key, entry in pairs(_light_meta_cache) do
             if entry and entry.map then
                 for _fp, rec in pairs(entry.map) do
@@ -2535,6 +2541,7 @@ function Repo.readProgress(filepath)
         if ok_sum and type(summary) == "table" then
             status = summary.status
             rating = tonumber(summary.rating)
+            _finished_on[filepath] = summary.modified or false
         end
         local ok_pm, stable_pages = pcall(ds.readSetting, ds, "pagemap_doc_pages")
         if ok_pm and stable_pages then
@@ -2608,6 +2615,26 @@ function Repo.readProgress(filepath)
     end
     _writeProgressCache(filepath, pct, status, rating, page_count, page_num, page_src)
     return pct, status, rating, page_count, page_num, page_src
+end
+
+-- Repo.finishedOn(filepath) -> the sidecar's summary.modified (the date its
+-- status was last set, "YYYY-MM-DD"), or nil. Remembered until the book's
+-- progress cache is dropped; readProgress usually answers it on the way.
+function Repo.finishedOn(filepath)
+    if not filepath then return nil end
+    local c = _finished_on[filepath]
+    if c == nil then
+        c = false
+        local ok_ds, ds = pcall(function() return getDocSettings():open(filepath) end)
+        if ok_ds and ds then
+            local ok_sum, summary = pcall(ds.readSetting, ds, "summary")
+            if ok_sum and type(summary) == "table" and summary.modified ~= nil then
+                c = summary.modified
+            end
+        end
+        _finished_on[filepath] = c
+    end
+    return c or nil
 end
 
 -- Repo.progressFor(filepath) -> pct, status, rating, page_count, opened, page_num
@@ -5357,6 +5384,11 @@ function Repo.getSeriesGroups(limit, offset, sort_priority_override, filter, opt
                 title        = book.title,
                 genres       = book.genres,
                 lang         = book.lang,
+                -- The author, so a surname sort files the book among the
+                -- series (351). Without it the key was empty and every
+                -- standalone went to the end of the shelf.
+                author       = book.author,
+                author_sort  = book.author_sort,
                 latest       = read_time[book.filepath] or c.mtime or 0,
                 latest_added = c.mtime or 0,
                 -- Sort-only field (hydration replaces this shape with a real
@@ -5535,6 +5567,12 @@ _applyFilter = function(meta_list, filter)
     end
     return out
 end
+
+-- Repo.applyFilter(books, filter) -> the books that pass a chip's filter, as
+-- the group hydrators apply it; the list itself is unchanged. For a group
+-- drill the widget has to re-filter: a return from a book can rebuild its
+-- payload from the group's full membership (GitHub issue 479).
+function Repo.applyFilter(books, filter) return _applyFilter(books, filter) end
 
 -- _withinPriority(sk): returns the level-2+ slice of a sort_priority,
 -- or nil when the chip only has a single level (no within-group rule).
@@ -7078,11 +7116,16 @@ function Repo.enrichStats(book)
     if not ok_conn or not conn then return end
 
     -- Roll-ups from the book table (kept in sync by ReaderStatistics).
+    -- KOReader keys a row by title + authors + md5 and starts a NEW row when
+    -- the title or authors change outside its own editor (a Calibre resend,
+    -- say), so one md5 can have two rows. The one it opened last is the one it
+    -- is reading into; an arbitrary one showed 27 minutes left in a book
+    -- KOReader put at 19 hours (Reddit report).
     local id_book, total_read_time, total_read_pages, pages_total
     local ok_q, err = pcall(function()
         local stmt = conn:prepare(
             "SELECT id, total_read_time, total_read_pages, pages "
-            .. "FROM book WHERE md5 = ? LIMIT 1")
+            .. "FROM book WHERE md5 = ? ORDER BY last_open DESC LIMIT 1")
         local row = stmt:reset():bind(md5):step()
         stmt:close()
         if row then

@@ -36,7 +36,9 @@ package.loaded["logger"] = { dbg=function() end, info=function() end,
                              warn=function() end, err=function() end }
 local TMPDIR = os.getenv("TMPDIR") or "/tmp"
 local DBDIR = TMPDIR .. "/bookshelf_facts_db_test"
-os.execute("rm -rf '" .. DBDIR .. "' && mkdir -p '" .. DBDIR .. "'")
+-- The store lives in settings/bookshelf/ (lib/bookshelf_paths), which the
+-- paths module makes once per session; a test that wipes it makes it again.
+os.execute("rm -rf '" .. DBDIR .. "' && mkdir -p '" .. DBDIR .. "/bookshelf'")
 package.loaded["datastorage"] = { getSettingsDir = function() return DBDIR end }
 
 local Facts = require("lib/bookshelf_book_facts_db")
@@ -51,7 +53,9 @@ local function test(name, fn)
 end
 local function fresh()
     Facts.close()
-    os.execute("rm -rf '" .. DBDIR .. "' && mkdir -p '" .. DBDIR .. "'")
+    -- The store lives in settings/bookshelf/ (lib/bookshelf_paths), which the
+-- paths module makes once per session; a test that wipes it makes it again.
+os.execute("rm -rf '" .. DBDIR .. "' && mkdir -p '" .. DBDIR .. "/bookshelf'")
     Facts.forgetMemo()
 end
 
@@ -211,6 +215,45 @@ test("facts: false clears a field, absent leaves it alone", function()
     assert(e.sk == nil, "status_known should have been cleared")
     assert(e.p == 200, "the page count is not the sidecar's to invalidate")
     assert(e.r == 9, "the look should be untouched")
+end)
+
+-- ── Highlight counts, for the quote of the day ─────────────────────────────
+
+test("facts: a highlight count and its sidecar time survive a reopen", function()
+    fresh()
+    Facts.put("/b/q.epub", { hl = 9, hm = 1234 })
+    Facts.put("/b/none.epub", { hl = 0, hm = 99 })
+    Facts.flush(); Facts.close(); Facts.forgetMemo()
+    local e = Facts.get("/b/q.epub")
+    assert(e and e.hl == 9 and e.hm == 1234, "the count was not kept: " .. tostring(e and e.hl))
+    local found = Facts.highlightBooks()
+    assert(found["/b/q.epub"] == 9, "a book with highlights is not listed")
+    assert(found["/b/none.epub"] == nil, "a book without highlights is listed")
+end)
+
+test("facts: a count written this session is listed before a flush", function()
+    fresh()
+    Facts.put("/b/new.epub", { hl = 3, hm = 5 })
+    assert(Facts.highlightBooks()["/b/new.epub"] == 3, "an unflushed count is missing")
+end)
+
+test("facts: an older database gains the highlight columns", function()
+    fresh()
+    Facts.close()
+    local SQ3 = require("lua-ljsqlite3/init")
+    local db = SQ3.open(DBDIR .. "/bookshelf/book_facts.sqlite3")
+    db:exec([[CREATE TABLE book_facts (fp TEXT PRIMARY KEY, pages INTEGER, pages_src TEXT,
+        r INTEGER, g INTEGER, b INTEGER, aspect REAL, status TEXT, status_known INTEGER,
+        sidecar_mtime INTEGER);]])
+    db:exec("INSERT INTO book_facts (fp, pages) VALUES ('/b/old.epub', 300);")
+    db:close()
+    Facts.forgetMemo()
+    local e = Facts.get("/b/old.epub")
+    assert(e and e.p == 300, "the old row was lost")
+    Facts.put("/b/old.epub", { hl = 2, hm = 7 })
+    Facts.flush(); Facts.forgetMemo()
+    local e2 = Facts.get("/b/old.epub")
+    assert(e2.hl == 2 and e2.p == 300, "the column was not added to the old table")
 end)
 
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))

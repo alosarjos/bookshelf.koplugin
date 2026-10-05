@@ -170,4 +170,132 @@ t.test("contentBox finds the opaque part of an ornament", function()
     os.execute("rm -rf '" .. d .. "'")
 end)
 
+t.test("while deferred, switches are kept in memory and written once at the end", function()
+    local O = fresh()
+    local deferred, flushed = 0, 0
+    O._store.saveDeferred = function(k, v) deferred = deferred + 1; mem[k] = v end
+    O._store.flush = function() flushed = flushed + 1 end
+    local saved = 0
+    local real_save = O._store.save
+    O._store.save = function(k, v) saved = saved + 1; real_save(k, v) end
+    O.beginDeferred()
+    for i = 1, 5 do O.setOff("a" .. i .. ".svg", true) end
+    O.setPackOff("Autumn", true)
+    eq(saved, 0, "no flushing save while deferred")
+    eq(deferred, 6)
+    eq(flushed, 0)
+    assert(O.isOff("a3.svg") and O.isPackOff("Autumn"), "the switches read back at once")
+    O.endDeferred()
+    eq(flushed, 1, "one flush at the end")
+    O.setOff("b.svg", true)
+    eq(saved, 1, "after the end, saves are ordinary again")
+end)
+
+-- ── The new-file poll watches the ornament folders too ───────────────────────
+-- Maintainer: "piggyback on the background check for new books, to check for
+-- new ornaments without having to go in/out or refresh anything". The poll
+-- runs every few seconds, so this is stats only, never a listing.
+
+local function touchAt(path, secs) os.execute("touch -d @" .. secs .. " '" .. path .. "'") end
+
+t.test("folderStamp: steady while nothing changes, moves when a pack or the folder does", function()
+    local O = setup()
+    O.listAll()                                   -- the scan records the pack folders
+    local s1 = O.folderStamp()
+    eq(O.stampChanged(s1, O.folderStamp()), false, "the stamp moved with nothing changed")
+    svg(O.dir() .. "/Autumn/pumpkin.svg"); touchAt(O.dir() .. "/Autumn", os.time() + 10)
+    local s2 = O.folderStamp()
+    eq(O.stampChanged(s1, s2), true, "a piece added to a pack went unseen")
+    os.execute("mkdir -p '" .. O.dir() .. "/Birds'"); touchAt(O.dir(), os.time() + 20)
+    eq(O.stampChanged(s2, O.folderStamp()), true, "a new pack went unseen")
+end)
+
+t.test("a scan that only widens the watch list is not a change", function()
+    -- On the rig the first baseline was taken before any scan (the roots
+    -- alone), and the scan then added the pack folders: a false "change" and
+    -- a needless rebuild at every start.
+    local O = setup()
+    local before = O.folderStamp()                -- no scan yet: roots only
+    O.listAll()
+    eq(O.stampChanged(before, O.folderStamp()), false, "the scan's own pack folders read as a change")
+end)
+
+t.test("folderStamp lists no folder", function()
+    local O = setup()
+    O.listAll()
+    local lists = 0
+    local real = lfs_shim.dir
+    O._lfs = setmetatable({ dir = function(p) lists = lists + 1; return real(p) end }, { __index = lfs_shim })
+    O.folderStamp()
+    O._lfs = lfs_shim
+    eq(lists, 0, "the poll's check lists a folder every tick")
+end)
+
+t.test("the shelf's file poll rescans ornaments when their folders change", function()
+    local w = io.open("lib/bookshelf_widget.lua"):read("*a")
+    local tick = w:match("function BookshelfWidget:_filePollTick%(%)(.-)\nend\n")
+    assert(tick and tick:find("Orn.folderStamp()", 1, true), "the poll does not look at the ornament folders")
+    assert(tick:find("Orn.invalidate()", 1, true), "a change does not drop the cached ornament list")
+    local start = w:match("function BookshelfWidget:_startFilePoll%(%)(.-)\nend\n")
+    assert(start and start:find("if self._orn_stamp == nil then", 1, true),
+        "re-arming re-baselines the ornament stamp, so pieces added during sleep are swallowed")
+end)
+
+-- ── Pack editor: adjustments made there go into the pack's own file ─────────
+
+local function readFile(p) local f = io.open(p); if not f then return nil end local s = f:read("*a"); f:close(); return s end
+
+t.test("commitPack moves a pack's records from the reader's file into the pack's", function()
+    local O = setup()
+    O._encode = function(t2)                      -- a stable stand-in for rapidjson
+        local keys = {}
+        for k in pairs(t2) do keys[#keys + 1] = k end
+        table.sort(keys)
+        local out = {}
+        for _i, k in ipairs(keys) do
+            local rec, fields = t2[k], {}
+            local fk = {}
+            for f in pairs(rec) do fk[#fk + 1] = f end
+            table.sort(fk)
+            for _j, f in ipairs(fk) do fields[#fields + 1] = f .. "=" .. tostring(rec[f]) end
+            out[#out + 1] = k .. ":" .. table.concat(fields, ",")
+        end
+        return table.concat(out, ";")
+    end
+    O._decode = function(text)
+        local t2 = {}
+        for rec in text:gmatch("[^;]+") do
+            local k, body = rec:match("^(.-):(.*)$")
+            if k then
+                t2[k] = {}
+                for f, v in body:gmatch("([%w_]+)=([^,]*)") do t2[k][f] = tonumber(v) or v end
+            end
+        end
+        return t2
+    end
+    -- What the pack already ships, and what the reader set.
+    local pf = assert(io.open(O.dir() .. "/Autumn/ornaments.json", "w")); pf:write("leaf.svg:lift=0.5,scale=0.9"); pf:close()
+    O._reader = { ["Autumn/leaf.svg"] = { scale = 1.4 }, ["Autumn/acorn.svg"] = { pad = 0.1 },
+                  ["Cats/leaf.svg"] = { scale = 2 }, ["template.svg"] = { scale = 0.5 } }
+    O._reader_dirty = true
+    eq(O.commitPack("Autumn"), 2)
+    local pj = O._decode(readFile(O.dir() .. "/Autumn/ornaments.json"))
+    -- The reader's values are adjustments to the pack's: folded in, they
+    -- become the pack's own, and the reader's 100% / 0% start from there.
+    assert(math.abs(pj["leaf.svg"].scale - 1.26) < 1e-9, "the editor's size was not folded into the pack's: " .. tostring(pj["leaf.svg"].scale))
+    eq(pj["leaf.svg"].lift, 0.5, "the pack's own value was lost")
+    eq(pj["acorn.svg"].pad, 0.1)
+    local rt = O.readerTable()
+    eq(rt["Autumn/leaf.svg"], nil, "the record stayed in the reader's file, where it would go on winning")
+    eq(rt["Cats/leaf.svg"].scale, 2, "another pack's record was moved")
+    eq(rt["template.svg"].scale, 0.5, "a loose piece's record was moved")
+    eq(O.commitPack("Autumn"), 0, "a second commit found more to move")
+end)
+
+t.test("the settings menu offers the pack editor under Developer updates", function()
+    local st = io.open("lib/bookshelf_settings.lua"):read("*a")
+    assert(st:find('_("Pack editor\\xE2\\x80\\xA6")', 1, true), "no Pack editor row")
+    assert(st:find('require("lib/bookshelf_pack_editor").choose(', 1, true), "the row does not open the editor")
+end)
+
 t.done()

@@ -1,5 +1,5 @@
 -- tests/_test_background_menu.lua
--- "Background and colors" is one top-level menu, not three scattered rows.
+-- "Wallpaper, ornaments and colors" is one top-level menu, not three scattered rows.
 --
 -- WHAT NEEDS PINNING. The theme lived under Settings > Colors, the background
 -- colour and the panel shading under Settings > Wallpaper and ornaments, and
@@ -37,7 +37,7 @@ end)
 t.test("the row is registered, with the maintainer's name", function()
     local row = main:match("(menu_items%.bookshelf_background = {.-\n    }\n)")
     assert(row, "menu_items.bookshelf_background missing")
-    assert(row:find('_("Background and colors")', 1, true), "the label changed")
+    assert(row:find('_("Wallpaper, ornaments and colors")', 1, true), "the label changed")
     assert(row:find("_backgroundSubItems", 1, true), "it must build the new menu")
     assert(row:find("S._bw = _live_widget", 1, true),
         "every menu that can repaint the shelf hands the live widget over first")
@@ -56,22 +56,25 @@ t.test("Settings no longer carries Colors or Wallpaper", function()
         .. "would eventually hold everything")
 end)
 
-t.test("the new menu is theme, then background, then ornaments, then accents", function()
+t.test("the menu is background, then ornaments, then accents (the theme is above it)", function()
+    -- The theme (light or dark, theme packs) left this menu for a top-level
+    -- row just above it (maintainer, 2026-10-02; main.lua bookshelf_theme).
     local body = settings:match("function Settings:_backgroundSubItems%(%)(.-)\nend\n")
     assert(body, "_backgroundSubItems missing")
-    local theme  = body:find("_shelfThemeRow", 1, true)
+    assert(not body:find("_shelfTheme", 1, true), "the theme row is still in this menu")
     local wall   = body:find("_wallpaperMenu", 1, true)
     local orn    = body:find("_ornamentsRow", 1, true)
     local accent = body:find('_("Accent colors")', 1, true)
-    assert(theme and wall and orn and accent, "a section is missing from the menu")
-    assert(theme < wall, "the theme is the first choice, above the background")
+    assert(wall and orn and accent, "a section is missing from the menu")
     assert(wall < orn, "ornaments close the group, after the picture")
     assert(orn < accent, "the accent list is last: it is a reference list")
 end)
 
-t.test("the theme row has one definition, not a copy in the colour list", function()
-    assert(settings:find("function Settings:_shelfThemeRow()", 1, true),
-        "the theme row builder is missing")
+t.test("the theme label has one definition, not a copy in the colour list", function()
+    assert(settings:find("function Settings:_shelfThemeText()", 1, true),
+        "the theme label builder is missing")
+    local main = io.open("main.lua"):read("*a")
+    assert(main:find("S:_shelfThemeText()", 1, true), "the top-level row builds its own label")
     local colours = settings:match("function Settings:_colorsSubItems%(%)(.-)\nend\n")
     assert(colours, "_colorsSubItems moved or was renamed")
     assert(not colours:find("_shelfThemeLabel", 1, true),

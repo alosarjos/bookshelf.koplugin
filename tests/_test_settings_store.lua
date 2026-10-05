@@ -11,13 +11,13 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 -- upvalue, so reassigning the slot repoints it.
 local lua_store = {}
 local flush_count = 0
-local MAIN_PATH = "/tmp/bookshelf-settings-test/bookshelf.lua"
+local MAIN_PATH = "/tmp/bookshelf-settings-test/bookshelf/settings.lua"
 -- Routed keys (opds_cache, hardcover_links, micromodule_*) land in their own
 -- files, keyed here by path -- separate tables from lua_store so a test can
 -- assert a routed key is absent from the main file and present in its own.
 local sub_files = {}
 
-package.loaded["datastorage"] = {
+package.loaded["datastorage"] = { getDataDir = function() return "/tmp/bookshelf-settings-test-data" end, 
     getSettingsDir = function() return "/tmp/bookshelf-settings-test" end,
 }
 package.loaded["logger"] = {
@@ -56,9 +56,11 @@ package.loaded["luasettings"] = {
 
 -- Global KOReader settings (migration source).
 local greader = {}
+local greader_flushes = 0
 _G.G_reader_settings = {
     readSetting = function(_, k) return greader[k] end,
     delSetting  = function(_, k) greader[k] = nil end,
+    flush       = function() greader_flushes = greader_flushes + 1 end,
 }
 
 local helpers = dofile("tests/_helpers.lua")
@@ -134,14 +136,14 @@ t.test("opds_cache routes to its own file, not the main file", function()
     Store.save("opds_cache", { ["srv|feed"] = { entries = {} } })
     assert(lua_store.opds_cache == nil,
         "opds_cache write must NOT touch the main file")
-    local sub = sub_files["/tmp/bookshelf-settings-test/bookshelf_opds.lua"]
+    local sub = sub_files["/tmp/bookshelf-settings-test-data/cache/bookshelf/opds.lua"]
     assert(sub ~= nil and sub.opds_cache["srv|feed"] ~= nil,
         "opds_cache write must land in the bookshelf_opds.lua file")
     eq(Store.read("opds_cache")["srv|feed"].entries ~= nil, true)
 end)
 
 t.test("path() returns the dedicated bookshelf settings file", function()
-    eq(Store.path(), "/tmp/bookshelf-settings-test/bookshelf.lua")
+    eq(Store.path(), "/tmp/bookshelf-settings-test/bookshelf/settings.lua")
 end)
 
 t.test("wasPresent reflects whether the file existed at load", function()
@@ -206,6 +208,50 @@ t.test("expandedTapAction: resolves explicit values + legacy fallback", function
     lua_store.expanded_tap_action = "nonsense"
     eq(Store.expandedTapAction(), "open")
     lua_store.expanded_tap_action = nil
+end)
+
+-- The three status-line settings (5.3): out of KOReader's settings.reader.lua,
+-- into bookshelf's own file, so backing up settings/bookshelf/ keeps them.
+t.test("the status-line settings move out of KOReader's settings file, once", function()
+    greader = { bookshelf_hero_regions = { status = { template = "x" } },
+                bookshelf_status_in_reader = true, bookshelf_reader_status_h = 42 }
+    lua_store = { migrated = true, hero_regions = { title = { bold = true } } }
+    local S = loadStore()
+    eq(S.read("status_in_reader"), true)
+    eq(S.read("reader_status_h"), 42)
+    eq(S.read("hero_regions").title.bold, true, "a value already in bookshelf's file wins")
+    eq(greader.bookshelf_hero_regions, nil); eq(greader.bookshelf_status_in_reader, nil)
+    eq(greader.bookshelf_reader_status_h, nil, "nothing is left in KOReader's file")
+    eq(S.view():readSetting("status_in_reader"), true, "a readSetting view for lib/status_line")
+end)
+
+t.test("old status-line keys left behind by an unsaved exit are cleared on a later start", function()
+    -- The move ran and was flagged, but KOReader was killed before it saved
+    -- its own file, so the old entries came back from disk.
+    greader = { bookshelf_status_in_reader = true }
+    lua_store = { migrated = true, reader_keys_moved = true, status_in_reader = false }
+    greader_flushes = 0
+    local S = loadStore()
+    eq(S.read("status_in_reader"), false, "the moved value is not overwritten by the stale one")
+    eq(greader.bookshelf_status_in_reader, nil, "the stale entry is cleared")
+    eq(greader_flushes > 0, true, "and KOReader's file saved, so it stays cleared")
+end)
+
+t.test("bookshelf's status-line code reads bookshelf's own settings", function()
+    -- lib/status_line (identical to Bookends') keeps the old names; the view
+    -- reads them under the new ones.
+    local SL = dofile("lib/status_line.lua")
+    lua_store = { migrated = true, reader_keys_moved = true, status_in_reader = true, reader_status_h = 30 }
+    local S = loadStore()
+    eq(SL.showInReader(S.view()), true)
+    eq(SL.reservedHeight(S.view()), 30)
+    for _i, f in ipairs({ "lib/bookshelf_hero_regions.lua", "lib/bookshelf_reader_status.lua", "lib/bookshelf_settings.lua" }) do
+        local src = io.open(f):read("*a")
+        assert(not src:find("G_reader_settings:saveSetting(Regions.SETTINGS_KEY", 1, true)
+            and not src:find("G_reader_settings:saveSetting(StatusLine.", 1, true)
+            and not src:find("showInReader(G_reader_settings)", 1, true)
+            and not src:find("G_reader_settings:readSetting(Regions.SETTINGS_KEY)", 1, true), f .. " still uses KOReader's settings file")
+    end
 end)
 
 t.done()

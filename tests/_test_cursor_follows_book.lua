@@ -133,6 +133,7 @@ end)
 -- The globals below are what the extracted bodies reference as upvalues in
 -- the real module.
 _G.UIManager          = { setDirty = function() end }
+_G.Gestures           = { on = function() return true end }
 _G.logger             = { dbg = function() end }
 _G._gettime           = function() return 0 end
 _G.BookshelfSettings  = { saved = {},
@@ -155,6 +156,7 @@ local function expanding(collapsed_view, expanded_view, total_items, cursor)
         _markOpdsNav    = function() end,
         _clearDpadFocus = function() end,
         _rebuild        = function(self_) self_._rebuilt = true end,
+        _isHeroSwipe    = function() return false end,
     }
     for k, fn in pairs(Shelf) do s[k] = fn end
     return s

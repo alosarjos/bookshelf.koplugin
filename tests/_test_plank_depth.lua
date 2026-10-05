@@ -161,10 +161,12 @@ t.test("the band painters read the STASHED surface, never the row", function()
     -- Two painters left this count by design: the space under a lifted spine
     -- and under a lifted face-out no longer REPRODUCE the plank's bands, they
     -- copy the shelf painted beside them (SpineShelf.fillLiftGap), so there is
-    -- nothing of theirs left to recompute or drift. The floor counts the
-    -- definition plus the painters that still reproduce bands.
+    -- nothing of theirs left to recompute or drift. A standing book's foot
+    -- nick joined them: the face-out's now copies the row below
+    -- (nickFromBelow), like the spines'. The floor counts the definition plus
+    -- the painters that still reproduce bands.
     local n = select(2, src:gsub("SpineShelf%.plankSurfaceOf%(", ""))
-    assert(n >= 3, "a band painter has stopped using the stashed surface: " .. n)
+    assert(n >= 2, "a band painter has stopped using the stashed surface: " .. n)
     assert(src:match("surf = SpineShelf%.plankSurface%(opts%.height%)"),
         "rowWidget no longer stashes the band on its plank descriptors")
     local stashes = select(2, src:gsub("surf = surf", ""))
@@ -235,6 +237,18 @@ t.test("a face-out gets a contact strip across its whole width", function()
         "the face-out contact strip has gone")
     assert(feet:match("pk%.lip"),
         "the strip no longer indexes the board from its own front edge")
+end)
+
+t.test("with the shadow masks on, the face-out strip stands aside", function()
+    -- The masks draw the face-out's contact line themselves, matched to the
+    -- spines'. This strip repaints the board's own colour, and books paint
+    -- after the shadows, so left on it would wipe that line out and put the
+    -- old, heavier band back under the cover (maintainer: "doesn't look like
+    -- it's sitting flush").
+    local feet = src:match("function FaceOutFeet:paintTo.-\nend")
+    assert(feet, "FaceOutFeet:paintTo could not be located")
+    assert(feet:match("SpineShelf%.shadowAssets%(%)"),
+        "the strip still paints under the masks' contact line")
 end)
 
 -- ── reproducing the board ─────────────────────────────────────────────────

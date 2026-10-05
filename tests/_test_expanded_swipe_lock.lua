@@ -17,6 +17,7 @@ local store = {}
 local function handler()
     local env = {
         BookshelfSettings = { nilOrTrue = function(k) local v = store[k]; return v == nil or v == true end },
+        Gestures = { on = function() return true end },
         _gettime = function() return 0 end,
         UIManager = { setDirty = function() end },
         logger = { dbg = function() end },
@@ -35,6 +36,7 @@ local function widget(on_shelf)
     function w:_setExpanded(v) self._expanded = v; self.calls[#self.calls + 1] = "expanded=" .. tostring(v) end
     function w:_rebuild() end
     function w:_isShelfSwipe() return on_shelf end
+    function w:_isHeroSwipe() return false end
     function w:_refreshLibrary() self.calls[#self.calls + 1] = "refresh" end
     return w
 end
