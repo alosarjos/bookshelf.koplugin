@@ -153,6 +153,12 @@ local env = {
         if mod == "lib/bookshelf_settings_store" then
             return { isTrue = function() return false end }
         end
+        -- The Theme row (a top-level shelf's own theme).
+        if mod == "lib/bookshelf_theme_pack" then
+            return { MINE = "mine", themeName = function(v) return tostring(v) end,
+                     packOf = function() return nil end, rescan = function() end,
+                     choiceList = function() return {} end, choiceLabel = function() return "" end }
+        end
         error("picker required an unexpected module: " .. tostring(mod))
     end,
 }
@@ -188,7 +194,9 @@ local run = compile("local self, draft, on_change, chrome = ...\n" .. body)
 -- Open the picker and hand back its anchor's two return values.
 local function openAnchor(draft)
     shown = nil
-    run({}, draft or {}, nil, nil)
+    -- self is Editor; only its Text below covers row is reached from here
+    -- (_test_shelf_cover_text drives that).
+    run({ _coverTextRow = function() return {} end }, draft or {}, nil, nil)
     assert(shown, "the picker showed no dialog")
     assert(type(shown.anchor) == "function",
            "the picker's anchor is no longer a function")
