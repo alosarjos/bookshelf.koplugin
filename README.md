@@ -141,7 +141,7 @@ Any of Bookshelf's own gestures can be switched off, one by one or all together,
 
 ### List view
 
-Any shelf can be a text list instead of covers. Long-press the shelf and pick **List** under Show as, or hold the page range in the footer to cycle whichever shelf you are looking at through covers, list and spines. Every shelf shows **Covers** until you change it; the third option, **Auto**, switches that shelf to a list whenever it is expanded or drilled into a folder or stack, and back to covers on the two rows under the top panel. The same dialog sets how many **rows** (1 to 12) and **columns** (1 to 3) the list uses, and pinching the shelf fits one more or one fewer row.
+Any shelf can be a text list instead of covers. Long-press the shelf and pick **List** under Show as, or hold the page range in the footer to cycle whichever shelf you are looking at through covers, list and spines. Every shelf shows **Covers** until you change it. **Auto** picks a style per level: **Level 1** is the shelf's top level and **Level 2** is everything you open from it (a folder, an author, a series). Tap either to step through Covers, List and Spines; they start as Covers then List. So an Authors shelf can list its authors and show each author's books as covers. A shelf of shelves has no Auto, since opening one of its shelves takes you to that shelf's own style. The same dialog sets how many **rows** (1 to 12) and **columns** (1 to 3) the list uses, and pinching the shelf fits one more or one fewer row. When Auto shows a list on both levels, the dialog has a set of each under **Level 1** and **Level 2**, so a list of authors and the list of one author's books can differ; Level 2 follows Level 1 until you change it, and a pinch changes the level you are on.
 
 Search results keep their own view -- covers unless you say otherwise. Long-press the **Search results** pill (or hold the page number) while viewing results to pick Covers, List or Auto for them.
 
@@ -168,7 +168,7 @@ Long-press a shelf and pick **Spines** under Show as, or hold the page range in 
 
 Tap a spine and the book lifts off the shelf (and shows in the top panel); tap it again to open it, or tap empty space anywhere on the shelf to put it back. A face-out book comes off in 3D, tipped forward and turned so you see its pages.
 
-**Face out.** Some books turn to show their cover, the way a shop dresses a shelf. Tick as many reasons as you like: unread books, unread books that are in no series, what you are currently reading, favourites, the first (or first unread) in each series, the newest few added, or the books in one collection you choose (a To read list, say). Or all books, or none.
+**Face out.** Some books turn to show their cover, the way a shop dresses a shelf. Tick as many reasons as you like: unread books, unread books that are in no series, what you are currently reading, what you have finished or put on hold, favourites, the first (or first unread) in each series, the newest few added, or the books in one collection you choose (a To read list, say). Or all books, or none. A favourite keeps its heart in the top-right corner when it faces out, whatever the reason.
 
 **Grouping.** On a grouped shelf (series, authors, genres) there are no folders to drill into -- the groups are flattened onto the shelf and each run gets a label at the shelf's edge. Everything is out where you can see it.
 
@@ -203,7 +203,7 @@ A pack's theme lives in a `theme` folder inside the pack: `wallpaper.png` (or `.
 
 A plank end PNG can carry a `tEXt` chunk with the keyword `bookshelf` and the text `plank_solid`: that end then replaces the middle across its whole width, with a hard inner edge, rather than being drawn over it.
 
-A `theme.json` in the `theme` folder makes the pack a theme pack, with a card of its own in the Theme library. Every field is optional: `name` and `description` (shown on the card), `shelf` (`"light"` or `"dark"`), `plank` (the name of the plank to use), `hero` (the file name, without extension, of the ornament the card shows; else its newest), `panel_shading` (`"transparent"`, `"low"`, `"moderate"`, `"heavy"` or `"solid"`, or a number from 0 to 1), `panel_blur` and `covers_panel` (`true` or `false`, for Blur wallpaper behind panels and Panel behind Covers shelves). Anything left out comes from the reader's Custom theme.
+A pack is a theme, with a card of its own in the Theme library, when it has an ornament, a wallpaper or a `theme.json`. So the simplest theme of your own is a folder in `koreader/settings/bookshelf/ornaments` with a `theme` folder inside it holding just `wallpaper.png`; the card is named after the folder. A `theme.json` in the `theme` folder gives it a name and more. Every field is optional: `name` and `description` (shown on the card), `shelf` (`"light"` or `"dark"`), `plank` (the name of the plank to use), `hero` (the file name, without extension, of the ornament the card shows; else its newest), `panel_shading` (`"transparent"`, `"low"`, `"moderate"`, `"heavy"` or `"solid"`, or a number from 0 to 1), `panel_blur` and `covers_panel` (`true` or `false`, for Blur wallpaper behind panels and Panel behind Covers shelves). Anything left out comes from the reader's Custom theme.
 
 ```json
 { "name": "Haunted", "description": "Bats, candles and a stone plank",
@@ -494,7 +494,7 @@ A theme is a wallpaper, a plank, colours, light or dark, panel shading and ornam
 
 - **Custom theme** -- your own settings. Choosing another theme never changes it, so it is always there to go back to.
 - **Plain** -- built in: no wallpaper, the Oak plank, the default colours and no ornaments.
-- **Packs** -- every ornament pack you have installed. A theme pack brings its own wallpaper, plank, colours and so on; anything a pack does not bring comes from Custom theme, so a pack of only ornaments brings just its ornaments.
+- **Packs** -- every ornament or theme pack you have installed, including one that is only a wallpaper. A theme pack brings its own wallpaper, plank, colours and so on; anything a pack does not bring comes from Custom theme, so a pack of only ornaments brings just its ornaments.
 
 Your **Default theme** is what every shelf without a theme of its own wears, and any shelf can have its own. After updating from 5.3 your shelf looks the same: a pack you were using becomes your Default theme, and your own settings become Custom theme.
 

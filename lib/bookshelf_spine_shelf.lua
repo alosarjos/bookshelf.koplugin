@@ -981,8 +981,12 @@ end
 -- is in no series, and every book in one collection the reader picks (a To
 -- read list, say). The collection is the one reason that carries a value
 -- other than true, its name, the way "recent" carries its count.
+-- "finished" and "on_hold" (5.4.4) complete the reading states: every book
+-- marked finished, so a shelf can show off what has been read, and every book
+-- put on hold.
 SpineShelf.FACE_REASONS = { "favorites", "first", "first_unread", "reading",
-                            "unread", "standalone", "recent", "collection" }
+                            "finished", "on_hold", "unread", "standalone",
+                            "recent", "collection" }
 SpineShelf.FACE_RECENT_DEFAULT = 5
 
 -- faceOutSpec(v) -> { favorites=, first=, reading=, all=, recent=N|nil }
@@ -2264,8 +2268,12 @@ function SpineBookSlot:_renderIntoAt(bb, x, y, night)
     if e.favourite and not e.face_out then
         local gsize = _glyphSizeDp(w_dp, e.ref_w_dp, GLYPH_FAV)
         local face = BFont:getFace("symbols", gsize)
+        -- The favourite icon the reader chose (heart unless set to star),
+        -- as the cover grid and list draw it; this was always the star.
+        local fav_glyph = CoverProgress.favoriteIcon() == "star"
+            and CoverProgress.FAV_GLYPH_STAR or CoverProgress.FAV_GLYPH_HEART
         local used = _paintLevelText(bb, x, cur_top, spine_w,
-                                     CoverProgress.FAV_GLYPH_STAR, face, night)
+                                     fav_glyph, face, night)
         if used > 0 then cur_top = cur_top + used + math.floor(pad / 2) end
     end
 
@@ -3610,11 +3618,12 @@ local function _optsKey(opts)
         -- only shapes rows: none of them is an entry input, and the
         -- pagination plan (n_rows = math.huge, balance = false) must share the
         -- slot with the page plans. orn_state in the key missed on every
-        -- render (PW5: every tap rebuilt every entry). orn_shelf only says
-        -- which deck the pieces come from, never an entry's look.
+        -- render (PW5: every tap rebuilt every entry). orn_shelf and orn_drill
+        -- only say which deck and seed the pieces come from, never an entry's
+        -- look.
         if k ~= "skip" and k ~= "n_rows" and k ~= "balance"
                 and k ~= "rows_per_page" and k ~= "page_index"
-                and k ~= "orn_state" and k ~= "orn_shelf" then
+                and k ~= "orn_state" and k ~= "orn_shelf" and k ~= "orn_drill" then
             local v = opts[k]
             if type(v) == "table" then
                 local sub = {}
@@ -4062,6 +4071,11 @@ function SpineShelf.plan(items, opts)
                     or (face_spec.first and f.series_first == true)
                     or (face_spec.first_unread and f.series_next == true)
                     or (face_spec.reading and src.status == "reading")
+                    -- The repository files KOReader's "complete" as
+                    -- "finished" and "abandoned" as "on_hold"
+                    -- (Repo.readProgress); both spellings are taken.
+                    or (face_spec.finished and (src.status == "finished" or src.status == "complete"))
+                    or (face_spec.on_hold and (src.status == "on_hold" or src.status == "abandoned"))
                     or (face_spec.unread and SpineShelf.isUnread(src))
                     or (face_spec.standalone and SpineShelf.isUnreadStandalone(src))
                     or (face_spec.collection and _inCollection(face_spec.collection, src.filepath))
@@ -4296,8 +4310,11 @@ function SpineShelf.plan(items, opts)
         dealer = Deck.dealer(Deck.copyState(opts.orn_state), cards),
         level = (#cards > 0) and orn_level or "off",
         -- The shelf's own seed: where the pieces stand varies page to page,
-        -- the same way every visit (lib/bookshelf_ornament_deck).
-        seed = orn.mod.hash(tostring(opts.orn_shelf or "")),
+        -- the same way every visit (lib/bookshelf_ornament_deck). A drill-in
+        -- adds its own (BookshelfWidget:_ornDrill), so its pieces stand
+        -- elsewhere than the shelf's top level and other drill-ins'.
+        seed = orn.mod.hash(tostring(opts.orn_shelf or "")
+                            .. (opts.orn_drill and ("|" .. opts.orn_drill) or "")),
         entries = entries, paginating = paginating, per_page = per_page,
         n_rows = opts.n_rows, content_w = content_w_books,
         size = size, space = space, pageKey = pageKey,
@@ -4884,10 +4901,15 @@ function SpineShelf.rowWidget(opts)
                         -- book doesn't float. flat_thumb drops the shadow AND
                         -- its pixel reservation; badges and glyphs stay.
                         flat_thumb    = true,
-                        -- Facing out IS the favourite marker on this shelf;
-                        -- the heart badge on top of it doubles the message
-                        -- and breaks the skeuomorphism (user ruling).
-                        suppress_favorite_badge = true,
+                        -- A favourite keeps its heart facing out. It used to
+                        -- be left off, facing out being the favourite marker
+                        -- (e384c1ae), but a cover can face out for many
+                        -- reasons now, and without the heart a finished or
+                        -- unread favourite read as not one (maintainer, 5.4.4:
+                        -- show it even when favourites are the only reason).
+                        -- Top-RIGHT: the status glyphs have the top-left here,
+                        -- and the "#N" pill that sits top-right is off.
+                        favorite_top_right = true,
                         -- Same argument for the "#N" and "<n>p" pills: the
                         -- spines beside it already number their series on the
                         -- foot, and a book's length is its width here (user
