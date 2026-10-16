@@ -172,6 +172,10 @@ Tap a spine and the book lifts off the shelf (and shows in the top panel); tap i
 
 **Grouping.** On a grouped shelf (series, authors, genres) there are no folders to drill into -- the groups are flattened onto the shelf and each run gets a label at the shelf's edge. Everything is out where you can see it.
 
+**Series boxes (optional).** Long-press the shelf's chip, open **Shelf style**, choose **Spines**, and turn **Series boxes** on. Books sharing series metadata then occupy one face-out slipcase, alongside standalone books. This is off by default and applies only to that shelf's Spines view; covers, lists, and online catalogues are unchanged. A box stays where its first member appeared in the shelf's sort order, with the lowest numbered volume on its front. Separate folder sections keep separate boxes, and filters determine which books belong to each box.
+
+Tap a box to browse its volumes; Back returns to the shelf and position you left. The sleeve and illustrative bindings use colours sampled from the covers, not invented spine artwork. Thickness grows with the number of volumes up to a cap, with at most six visible bindings. The corner badge shows finished/available volumes. When every volume in the box is finished, it follows the same completion-mark and fade preferences as ordinary books.
+
 **Spine text direction.** Which way a title runs down a spine: **Top to bottom** (the default, how British and American books are printed) or **Bottom to top** (Continental European). Set it once for the whole library under **menu > Settings > Library & search**.
 
 **Ornaments.** Drop PNG or SVG files into the `koreader/settings/bookshelf/ornaments` folder (beside the wallpapers) and they turn up in the gaps, standing on the plank like the books. A potted plant and a cactus are seeded there to start you off; delete them if you would rather not see them and they stay deleted. Ornaments from before 5.3, in `koreader/icons/bookshelf.ornaments`, move here by themselves on the first start.
@@ -529,7 +533,7 @@ You can also choose a shelf's theme where you set its style: long-press the shel
 - **Blur wallpaper behind panels** -- blurs the picture behind the top panel and the footer before the shading goes over it, like frosted glass. Greyed out at Transparent and Solid, where there is nothing to blur.
 - **Panel behind Covers shelves** -- Covers shelves get one panel behind the top panel, the covers and the footer, as list shelves have, in place of a plate under each title.
 
-Like everything else in the Theme menu, these are part of the theme. **Extra wallpaper folder**, under **menu > Settings**, is not: it is a folder of your own to take pictures from as well, for wallpapers you already keep somewhere else. Its pictures are listed alongside the standard folder's, and nothing in it is changed. Long-press the row to stop using it.
+Like everything else in the Theme menu, these are part of the theme. **Extra wallpaper folder**, the last row of the same menu, is not: it is a folder of your own to take pictures from as well, for wallpapers you already keep somewhere else. Its pictures are listed alongside the standard folder's, and nothing in it is changed. Long-press the row to stop using it.
 
 ### Colors
 
@@ -563,6 +567,8 @@ Bookshelf can replace the default folder cover (cardboard card with the first bo
 - **Drop named images into an image library** for authors, series, genres, and collections. The default location is `<your-library>/.bookshelf-images/` with subfolders `authors/`, `series/`, `genres/`, and `collections/`. Name each file after the exact stack name (e.g. `authors/Asimov, Isaac.jpg`) or use a slugified form as a fallback. The slug lowercases the name and turns runs of punctuation / whitespace into single dashes, preserving the original order -- so `Asimov, Isaac` matches `asimov-isaac.jpg`, and `Isaac Asimov` matches `isaac-asimov.jpg`. Extensions tried in order: `jpg`, `jpeg`, `png`, `gif`, `bmp`, `webp`, `tiff`.
 
 Pick a different image-library location under **menu > Settings > Library & search > Image library**.
+
+**Author photos can be found for you.** **menu > Settings > Library & search > Find author images online…** looks up a photo of every author on your shelves that has no image yet and saves it into the image library's `authors/` folder, as if you had put it there yourself. Photos come from [Open Library](https://openlibrary.org), or from the author's Wikipedia page when Open Library has none; where several people share a name, Open Library's pick is the one with the most books, and a Wikipedia page counts only when it describes a writer. Images you already have are kept, names like *Anonymous* and *Various* are skipped, and tapping the progress message pauses or stops it. Nothing is downloaded until you ask. To fetch (or replace) one author's photo, long-press the author and choose **Find author image online**. A wrong person is one long-press away from *Clear author image*, or delete the file. An author's image is found whichever way round the name is written, so switching **Author name formatting** between *First Last* and *Last, First* keeps it.
 
 Long-press an image-set folder or stack and tap *Clear … image* to revert to the cardboard default.
 
@@ -825,9 +831,11 @@ Up to three levels per shelf. Available sort keys:
 - **Series, else title** -- a series sorts under its name and a standalone book under its title, so both share one alphabetical order, with series books kept in order
 - **Last opened** (most-recent-first by default)
 - **Date added** (most-recent-first by default)
+- **Added or opened** (whichever is later, most recent first: new books and the book you just opened both go to the front)
 - **Percent read** (most progress first by default)
 - **Rating** (highest first by default; unrated last)
 - **Unread/Reading/Finished** or **Reading/Unread/Finished** (status orderings)
+- **Favorites first** -- books in Favorites ahead of the rest; pair it with *Reading/Unread/Finished* or *Last opened* as the next level
 - **File size**
 - **Page count**
 - **Book count** (for stacks)

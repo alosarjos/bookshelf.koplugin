@@ -120,6 +120,21 @@ local STATUS_RANK_ACTIVE   = {
     finished = 4, complete = 4,
 }
 
+-- isFavourite(item) -> the book is in KOReader's default "favorites"
+-- collection. A plain table lookup on ReadCollection.coll (the same check the
+-- spine shelf and the favourite token make), so it is cheap enough to run on
+-- every one of the comparator's ~n*log(n) calls. Without ReadCollection (the
+-- standalone test harness) nothing is a favourite.
+local function isFavourite(item)
+    local fp = type(item) == "table" and item.filepath
+    if not fp then return false end
+    local ok, rc = pcall(require, "readcollection")
+    return ok and type(rc) == "table" and type(rc.coll) == "table"
+        and type(rc.coll.favorites) == "table"
+        and rc.coll.favorites[fp] ~= nil or false
+end
+SortEngine.isFavourite = isFavourite
+
 -- nil-safe comparator helper. Returns -1, 0, +1 so it composes cleanly.
 -- nil always sorts to the end (higher sort order).
 -- Sentinel return values for nil-handling. The chainedComparator detects
@@ -624,6 +639,12 @@ SortEngine.KEYS = {
                                 return cmp(STATUS_RANK_ACTIVE[a.read_status or a._status or "unread"] or 99,
                                            STATUS_RANK_ACTIVE[b.read_status or b._status or "unread"] or 99)
                             end },
+    -- Favourites (KOReader's default "favorites" collection) ahead of the
+    -- rest; ties fall to the next level, e.g. Reading 1st then Last opened.
+    favorites_first = { label = tr("Favorites first"), short = tr("Favorite 1st"),
+                        comparator = function(a, b)
+                            return cmp(isFavourite(a) and 1 or 2, isFavourite(b) and 1 or 2)
+                        end },
     -- Book record: a.date_added
     -- lfs entry:   a.attr.modification
     -- group shape: a.latest_added (max member mtime; set in _buildGroups so
@@ -637,6 +658,21 @@ SortEngine.KEYS = {
                             local bv = b.date_added or b.latest_added
                                     or (b.attr and b.attr.modification)
                             return cmp(av, bv)
+                        end },
+    -- The later of the two above (issue 519), the way a Kindle's home orders
+    -- its books: a new book goes to the front, and so does one just opened,
+    -- until the next new book pushes it back. Same fields as last_opened and
+    -- date_added, every shape; a missing side counts as never.
+    added_or_opened = { label = tr("Added or opened"), short = tr("Added/opened"),
+                        comparator = function(a, b)
+                            local function at(x)
+                                local o = tonumber(x.last_opened or x._last_read or x.latest) or 0
+                                local d = tonumber(x.date_added or x.latest_added
+                                    or (x.attr and x.attr.modification)) or 0
+                                local v = math.max(o, d)
+                                if v > 0 then return v end
+                            end
+                            return cmp(at(a), at(b))
                         end },
     -- Book record: a.size
     -- lfs entry:   a.attr.size
@@ -695,9 +731,9 @@ SortEngine.KEYS = {
 SortEngine.ORDER = {
     "title", "filename", "author_surname", "author_name",
     "series_name", "series_index", "series_combined", "series_or_title",
-    "last_opened", "date_added",
+    "last_opened", "date_added", "added_or_opened",
     "percent_read", "rating",
-    "read_status", "read_status_active",
+    "read_status", "read_status_active", "favorites_first",
     "size", "page_count", "book_count",
 }
 
