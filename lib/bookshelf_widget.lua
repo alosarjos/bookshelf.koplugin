@@ -664,45 +664,21 @@ function BookshelfWidget:handleEvent(event)
         -- would strip that priority.
         if InputContainer.handleEvent(self, event) then return true end
 
-        local fm = require("apps/filemanager/filemanager").instance
+        -- KOReader's zones on whichever host is live: FileManager, or the
+        -- reader parked beneath the shelf (hot parking: no FileManager exists
+        -- then, and a menu-intent gesture finishes the close and opens the
+        -- real FM menu; see GestureZones.tryLiveZones).
         local ev = event.args[1]
+        if GestureZones.tryLiveZones(ev) then return true end
         -- A tap nothing took (empty shelf, the wall between rows, a gap
         -- between spines) drops a lifted book back onto the shelf. Last, so
         -- KOReader's corner taps and the reader's own zones keep theirs.
-        if fm then
-            if GestureZones.tryFMZones(ev, fm) then return true end
-            return self:_dropLiftOnTap(ev)
-        end
-        -- Hot parking: no FileManager exists while a reader is parked
-        -- beneath the shelf. A menu-intent gesture (the reader's top-strip
-        -- menu zones) converts on the spot: finish the deferred close and
-        -- open the real FM menu, so the user never sees book actions on
-        -- the home screen. Everything else forwards to the reader host's
-        -- allowlisted zones (user gestures; page-turn zones excluded).
-        local Park = require("lib/bookshelf_reader_park")
-        if Park.isParked() then
-            local rui = require("apps/reader/readerui").instance
-            if GestureZones.matchesReaderMenuZone(ev, rui) then
-                Park.finishToMenu()
-                return true
-            end
-            if GestureZones.tryReaderZones(ev, rui) then return true end
-            return self:_dropLiftOnTap(ev)
-        end
         return self:_dropLiftOnTap(ev)
     end
 
     if InputContainer.handleEvent(self, event) then return true end
-    if require("apps/filemanager/filemanager").instance then
-        return GestureZones.forwardToFM(event, self)
-    end
-    -- Parked reader hosts Dispatcher actions when there's no FM (see above).
-    local Park = require("lib/bookshelf_reader_park")
-    if Park.isParked() then
-        local rui = require("apps/reader/readerui").instance
-        return GestureZones.forwardToReader(event, self, rui)
-    end
-    return false
+    -- Dispatcher actions go to FM, or the parked reader when there's no FM.
+    return GestureZones.forwardToLive(event, self)
 end
 
 -- ─── _rebuild ─────────────────────────────────────────────────────────────────
@@ -6546,7 +6522,7 @@ end
 -- the chip's WHOLE list for both, never the page being drawn.
 function BookshelfWidget:_spinePlanBase(content_w, shelf_h, all_items)
     local SpineShelf = require("lib/bookshelf_spine_shelf")
-    return {
+    local opts = {
         -- The row keeps exposed plank at both ends; the fill budget shrinks
         -- by the two margins so books never reach the shelf's edges.
         content_w       = content_w - 2 * SpineShelf.endMargin(shelf_h),
@@ -6568,6 +6544,7 @@ function BookshelfWidget:_spinePlanBase(content_w, shelf_h, all_items)
         -- measured from.
         hang_gap        = self:_rowGap((self:_layoutPrimitives())),
     }
+    return require("lib/bookshelf_book_binding").applyOptions(opts, self.chip, self._drilldown_path)
 end
 
 -- _rowsRegionTop(shelf_top, d) -> where a page turn's repaint starts: the
@@ -8526,6 +8503,29 @@ local function _pageAnimSteps()
     return PageWipe.resolveSteps()
 end
 
+-- _pageTurnFlashDue() -> true when this page turn should be a full refresh.
+--
+-- "Use E-ink refresh rate for shelf pages" (issue 529): the shelf follows
+-- KOReader's own Full refresh rate. KOReader counts only "partial" refreshes
+-- towards its flash and the shelf's page turns are "ui", so with the rate at
+-- Every page the shelf still ghosted. The shelf keeps its own count against
+-- the same rate (UIManager.FULL_REFRESH_COUNT, which already reads the night-mode
+-- rate when night mode is on). Never, or the reader's chapter-boundary
+-- mode (-1), means never here. Off by default: a flash costs time.
+function BookshelfWidget._pageTurnFlashDue()
+    if not BookshelfSettings.isTrue("shelf_full_refresh") then return false end
+    if not (Device.hasEinkScreen and Device:hasEinkScreen()) then return false end
+    local rate = tonumber(UIManager.FULL_REFRESH_COUNT) or 0
+    if rate <= 0 then return false end
+    local n = (BookshelfWidget._turns_since_flash or 0) + 1
+    if n >= rate then
+        BookshelfWidget._turns_since_flash = 0
+        return true
+    end
+    BookshelfWidget._turns_since_flash = n
+    return false
+end
+
 -- _swapShelvesInPlace — pagination fast-path. Rebuilds only the shelf rows
 -- + footer, leaving hero + chips intact. Avoids redundant work (the chips
 -- never change with self.page; the hero only changes with _preview_book)
@@ -8838,6 +8838,11 @@ function BookshelfWidget:_swapShelvesInPlace()
     -- Consume the flag on any real page-turn (whether or not we skipped),
     -- so only the immediate post-refresh turn is affected.
     if _wipe_dir then self._full_refresh_pending = nil end
+    -- A turn due a full refresh skips the wipe: the flash would repaint
+    -- the region it had just animated.
+    local flash = _wipe_dir and BookshelfWidget._pageTurnFlashDue() or false
+    if flash then anim_steps = nil end
+    local refresh_mode = flash and "full" or "ui"
     local wiped = false
     if anim_steps then
         local ry = BookshelfWidget._rowsRegionTop(shelf_top, d)
@@ -8893,15 +8898,15 @@ function BookshelfWidget:_swapShelvesInPlace()
             if footer_rect and footer_band and footer_band.y > ry then
                 -- Rows band + only the changed part of the footer. The
                 -- widget repaint covers both; the flash covers just these.
-                UIManager:setDirty(self, "ui", Geom:new{
+                UIManager:setDirty(self, refresh_mode, Geom:new{
                     x = 0, y = ry, w = self.width, h = footer_band.y - ry })
                 UIManager:setDirty(nil, "ui", footer_rect)
             else
-                UIManager:setDirty(self, "ui", Geom:new{
+                UIManager:setDirty(self, refresh_mode, Geom:new{
                     x = 0, y = ry, w = self.width, h = self.height - ry })
             end
         else
-            UIManager:setDirty(self, "ui")
+            UIManager:setDirty(self, refresh_mode)
         end
     end
     -- Pagination via _swapShelvesInPlace bypasses _rebuild's persist hook;
@@ -24204,6 +24209,28 @@ function BookshelfWidget:_openGroupMenu(group, kind)
         end
     end
 
+    if kind == "series" and self:_isSpineMode() then
+        local Binding = require("lib/bookshelf_book_binding")
+        buttons[#buttons + 1] = {{
+            text_func = function()
+                local value = Binding.series(source_id)
+                return T(_("Book binding: %1"), value and Binding.label(value) or _("Follow shelf"))
+            end,
+            callback = function()
+                local value = Binding.series(source_id)
+                local next_value
+                if value == nil then next_value = "hardcover"
+                elseif value == "hardcover" then next_value = "paperback" end
+                if Binding.setSeries(source_id, next_value) then
+                    bw_ref:_rebuild()
+                    UIManager:setDirty(bw_ref, "ui")
+                    Focus.reinit(dialog)
+                    UIManager:setDirty(dialog, "ui")
+                end
+            end,
+        }}
+    end
+
     -- Custom-image row (#70). Folders take a filesystem path and may
     -- already have an auto-detected cover.jpg; author/series/genre/tag
     -- stacks take a (kind, name) pair and look the image up in the
@@ -24679,6 +24706,52 @@ function BookshelfWidget:_subShelfCoverFps(tab, n, depth)
     return out
 end
 
+-- _subShelfMemberFps(tab) -> the distinct local books a shelf's tile counts,
+-- for the stack count badge (issue 527): its books with its own filters, a
+-- grouped shelf's groups flattened, a shelf of shelves summing its shelves.
+-- An OPDS shelf counts nothing -- its cached window is a slice of the catalog,
+-- not its size -- and remote records are skipped the same way.
+function BookshelfWidget:_subShelfMemberFps(tab)
+    local TabModel = require("lib/bookshelf_tab_model")
+    local out, seen = {}, {}
+    local function add(fp)
+        if type(fp) == "string" and not seen[fp] and not fp:match("^%a+://") then
+            seen[fp] = true
+            out[#out + 1] = fp
+        end
+    end
+    local function walk(t, depth)
+        if not t or depth > 8 then return end
+        if TabModel.isShelves(t) then
+            for _i, c in ipairs(TabModel.childrenOf(t.id)) do walk(c, depth + 1) end
+            return
+        end
+        if type(t.source) ~= "table" or t.source.kind == "opds" then return end
+        -- Light records under the shelf's own sort: order is irrelevant to a
+        -- count, but that is the list the repo has cached, and without the
+        -- sort the fetch missed it on every build (a 79-book favourites shelf
+        -- measured 270 ms each time against 0.2 ms).
+        local ok, items = pcall(Repo.getBySource, t.source, t.filter,
+            t.sort_priority, 0, SPINE_ALL_LIMIT, { light_only = true })
+        if not ok or type(items) ~= "table" then return end
+        for _i, it in ipairs(items) do
+            if type(it) == "table" then
+                if type(it.books) == "table" and not it.filepath then
+                    for _j, b in ipairs(it.books) do add(b.filepath) end
+                elseif it.kind == "folder" and it.path then
+                    -- Home and folder shelves hand back their subfolders as
+                    -- cards; the count is what is inside them.
+                    for _j, fp in ipairs(Repo.getFolderBookPaths(it.path) or {}) do add(fp) end
+                else
+                    add(it.filepath)
+                end
+            end
+        end
+    end
+    walk(tab, 0)
+    return out
+end
+
 -- _subShelfSpill(tab) -> a shelf of shelves as a spine shelf shows it: the
 -- books of every shelf inside it, each shelf in its own order and with its
 -- own filters, as a run labelled with its name (the section tag every spine
@@ -24749,6 +24822,10 @@ function BookshelfWidget:_subShelfItems(tab, offset, limit)
     -- The "+" tile can be hidden once the shelves are set up (shelf editor).
     local total = #children + (tab.hide_add_tile and 0 or 1)
     local ScaledCoverCache = require("lib/bookshelf_scaled_cover_cache")
+    -- A tile is folder-shaped, so it counts under the badge's folder setting;
+    -- the full fetch is only paid when that would show it.
+    local mode = BookshelfSettings.read("stack_count_badge_mode")
+    local want_count = (mode == "folders" or mode == "all")
     local out = {}
     for i = offset + 1, math.min(offset + limit, total) do
         local c = children[i]
@@ -24767,6 +24844,7 @@ function BookshelfWidget:_subShelfItems(tab, offset, limit)
                 subshelf_id = c.id,
                 first_book  = first,
                 cover_fps   = fps,
+                member_fps  = want_count and self:_subShelfMemberFps(c) or nil,
             }
         else
             out[#out + 1] = {

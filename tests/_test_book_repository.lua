@@ -2582,6 +2582,34 @@ test("countByStatus: no Kindle chip leaves the tally exactly as it was", functio
     assert(counts.unread == 0, "the Kindle unread must not leak in, got " .. tostring(counts.unread))
 end)
 
+test("countByStatusStepper: counts a few books per step, same answer as countByStatus", function()
+    -- The Shelf size module runs the count in steps between UI ticks: a cold
+    -- count read every sidecar in one go and froze a first full-screen open
+    -- for 3 seconds on a PW5.
+    _setupWalk({ "a.epub", "b.epub", "c.epub", "d.epub", "e.epub" },
+               { ["a.epub"] = "complete", ["c.epub"] = "reading" }, true)
+    _fakeKindleSource({ { filepath = "/k/a.kfx", title = "A", _status = "finished" } })
+    local step = Repo.countByStatusStepper()
+    local steps, done, total, counts = 0, false, nil, nil
+    while not done do
+        steps = steps + 1
+        done, total, counts = step(2)
+        assert(steps < 10, "the stepper never finished")
+    end
+    -- A finished stepper answers again without counting anything twice.
+    local again, total2, counts2 = step(2)
+    local full_total, full_counts = Repo.countByStatus()
+    _teardownWalk()
+    assert(steps == 3, "5 books at 2 a step is 3 steps, got " .. steps)
+    assert(total == 6, "5 walked + 1 Kindle, got " .. tostring(total))
+    assert(counts.finished == 2 and counts.reading == 1 and counts.unread == 3,
+        "got finished=" .. tostring(counts.finished) .. " reading=" .. tostring(counts.reading)
+        .. " unread=" .. tostring(counts.unread))
+    assert(again and total2 == 6 and counts2.finished == 2, "a second call re-counted")
+    assert(full_total == total and full_counts.unread == counts.unread,
+        "countByStatus and the stepper disagree")
+end)
+
 test("countByStatus: an unreadable Kindle library leaves the tally alone", function()
     -- A chip carried over from another device, on hardware with no catalogue.
     _setupWalk({ "done.epub" }, { ["done.epub"] = "complete" }, true)
@@ -6348,6 +6376,55 @@ test("getFolderSections: a one-book folder folds into its parent's run", functio
     assert(total == 2, "two books, got " .. tostring(total))
     assert(out[1].shelf_section == "Banks", "got " .. tostring(out[1].shelf_section))
     assert(out[2].shelf_section == "Banks", "got " .. tostring(out[2].shelf_section))
+end)
+
+test("getFolderSections: status and Opened sorts order books inside a section", function()
+    -- #534: the light records carry no sidecar status and no history time, so
+    -- "Reading 1st" or "Opened" on a spine Home shelf compared nil with nil and
+    -- left each folder's books in walk order.
+    Repo.invalidateWalkCache()
+    Repo.invalidateProgressCache()
+    package.loaded["libs/libkoreader-lfs"].dir = function(path)
+        local files
+        if path == "/lib" then files = { ".", "..", "Mix" }
+        elseif path == "/lib/Mix" then
+            files = { ".", "..", "a.epub", "b.epub", "c.epub" }
+        else files = {} end
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(fp, key)
+        if key == "modification" then return 100
+        elseif key == "mode" then return fp == "/lib/Mix" and "directory" or "file" end
+    end
+    _G._test_settings = { home_dir = "/lib", bookshelf_latest_walk_depth = 3 }
+    _G._test_bim_data = {
+        ["/lib/Mix/a.epub"] = { title = "A" },
+        ["/lib/Mix/b.epub"] = { title = "B" },
+        ["/lib/Mix/c.epub"] = { title = "C" },
+    }
+    _G._test_docsettings_data = {
+        ["/lib/Mix/a.epub"] = { summary = { status = "complete" }, percent_finished = 1 },
+        ["/lib/Mix/c.epub"] = { summary = { status = "reading" }, percent_finished = 0.4 },
+    }
+    local out = Repo.getFolderSections(20, 0, { { key = "read_status_active" } })
+    local order = {}
+    for i = 1, #out do order[i] = out[i].filepath:match("([^/]+)$") end
+    assert(table.concat(order, ",") == "c.epub,b.epub,a.epub",
+        "Reading 1st: reading, unread, finished; got " .. table.concat(order, ","))
+
+    package.loaded["readhistory"].hist = {
+        { file = "/lib/Mix/a.epub", time = 300 },
+        { file = "/lib/Mix/c.epub", time = 200 },
+    }
+    out = Repo.getFolderSections(20, 0, { { key = "last_opened", reverse = true } })
+    order = {}
+    for i = 1, #out do order[i] = out[i].filepath:match("([^/]+)$") end
+    assert(order[1] == "a.epub" and order[2] == "c.epub",
+        "Opened, newest first; got " .. table.concat(order, ","))
+    package.loaded["readhistory"].hist = {}
+    _G._test_docsettings_data = nil
+    Repo.invalidateProgressCache()
 end)
 
 test("allHasBooks: the whole cached set of a path, nil when nothing is cached", function()
