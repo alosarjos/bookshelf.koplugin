@@ -150,12 +150,16 @@ find . -name '*.lua' -not -path './.git/*' -not -path './.claude/*' -print0 \
   | xargs -0 -I{} luajit -b {} /dev/null
 
 # Suite de tests bajo Lua 5.4 estándar (no LuaJIT: los tests mockean módulos
-# de KOReader y una FFI real chocaría con las cdefs que faltan). LC_ALL=C es
-# importante: varios tests son sensibles al locale del sistema (agrupación
-# por idioma, nombres de carpetas traducidos) y GitHub Actions corre en C/
-# C.UTF-8 -- un shell local en es_ES.UTF-8 (u otro no-C) puede dar falsos
-# positivos o falsos negativos que no reproducen lo que ve CI.
-for f in tests/_test_*.lua; do echo "== $f =="; LC_ALL=C lua5.4 "$f"; done
+# de KOReader y una FFI real chocaría con las cdefs que faltan). Forzar el
+# locale C es importante: varios tests son sensibles al locale del sistema
+# (agrupación por idioma, nombres de carpetas y textos traducidos) y GitHub
+# Actions corre en C/C.UTF-8 -- un shell local en es_ES.UTF-8 (u otro no-C)
+# puede dar falsos positivos o falsos negativos que no reproducen lo que ve
+# CI. OJO: hace falta LANG=C, no basta LC_ALL=C -- lib/bookshelf_i18n.lua
+# elige idioma con os.getenv("LANG") antes que LC_ALL/LC_MESSAGES (al revés
+# que la precedencia POSIX), así que con LANG=es_ES.UTF-8 un LC_ALL=C solo
+# no cambia nada y los tests ven las cadenas en español.
+for f in tests/_test_*.lua; do echo "== $f =="; LANG=C LC_ALL=C lua5.4 "$f"; done
 
 # Traducciones (ver paso 3.5)
 for f in locale/*.po; do msgfmt --check -o /dev/null "$f"; done
@@ -164,10 +168,10 @@ for f in locale/*.po; do msgfmt --check -o /dev/null "$f"; done
 Si algún test falla, antes de bloquear la release comprueba si es una
 regresión real:
 
-1. Reprodúcelo con `LC_ALL=C` primero -- descarta que sea un artefacto del
+1. Reprodúcelo con `LANG=C LC_ALL=C` primero -- descarta que sea un artefacto del
    locale de tu shell (ver nota de arriba) antes de investigar nada más.
 2. Si persiste, reproduce el mismo test contra el último tag publicado del
-   fork (`git worktree add /tmp/check vX.Y.Z && LC_ALL=C lua5.4 /tmp/check/tests/_test_foo.lua`).
+   fork (`git worktree add /tmp/check vX.Y.Z && LANG=C LC_ALL=C lua5.4 /tmp/check/tests/_test_foo.lua`).
    Si ya fallaba antes de tus cambios, es un fallo preexistente del fork.
 3. Si el fallo llegó con la fusión de un tag de upstream nuevo, reproduce
    también contra un checkout limpio de ESE tag de upstream, sin nada del
