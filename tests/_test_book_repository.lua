@@ -948,6 +948,122 @@ test("buildBook: forwards want_cover to BIM so callers can skip the decode", fun
     assert(seen[2] == false, "want_cover=false should reach BIM, got " .. tostring(seen[2]))
 end)
 
+test("page counts follow KOReader's Use stable page numbers for the book (#539)", function()
+    -- A book with a publisher page list: 569 printed pages, on printed page
+    -- 21, 718 screens at the reader's font, 4% in. KOReader keeps the
+    -- printed count in the sidecar either way; whether the reader USES it is
+    -- pagemap_use_page_labels. Bookshelf showed 21 / 569 while the reader,
+    -- with stable page numbers off, showed 718.
+    local function sidecar(use)
+        return { percent_finished = 0.04, pagemap_doc_pages = 569,
+                 pagemap_current_page_label = "21", stats = { pages = 718 },
+                 pagemap_use_page_labels = use,
+                 summary = { status = "reading" } }
+    end
+    local cases = {
+        { use = false, pages = 718, num = 29, src = "render" },
+        { use = true,  pages = 569, num = 21, src = "stable" },
+        { use = nil,   pages = 569, num = 21, src = "stable" },  -- never opened since: unchanged
+    }
+    for _, c in ipairs(cases) do
+        local fp = "/lib/victorious-" .. tostring(c.use) .. ".epub"
+        _G._test_docsettings_data = { [fp] = sidecar(c.use) }
+        _G._test_bim_data = { [fp] = { title = "Victorious" } }
+        Repo.invalidateProgressCache(fp)
+        local _pct, _st, _r, pages, num, src = Repo.readProgress(fp)
+        assert(pages == c.pages and num == c.num and src == c.src, string.format(
+            "readProgress use=%s: got %s / %s (%s), want %s / %s (%s)", tostring(c.use),
+            tostring(num), tostring(pages), tostring(src), c.num, c.pages, c.src))
+        Repo.invalidateProgressCache(fp)
+        local book = Repo.buildBook(fp)
+        assert(book.page_count == c.pages and book.page_num == c.num, string.format(
+            "buildBook use=%s: got %s / %s, want %s / %s", tostring(c.use),
+            tostring(book.page_num), tostring(book.page_count), c.num, c.pages))
+    end
+    _G._test_docsettings_data = nil
+    _G._test_bim_data = {}
+end)
+
+test("Home (folders) re-sorts by Added or opened after a book is closed (#519)", function()
+    -- getAll keeps its sorted listing in its own cache. Closing a book only
+    -- ran invalidateReadStateCache, which cleared the predicate path's cache
+    -- and not this one, so a Home shelf sorted by Added or opened (or Last
+    -- opened, progress, status, rating) kept the opened book where it was
+    -- until a refresh, the file poll or a restart.
+    Repo.invalidateWalkCache()
+    Repo.invalidateProgressCache()
+    local lfs_stub = package.loaded["libs/libkoreader-lfs"]
+    local prev = { dir = lfs_stub.dir, attributes = lfs_stub.attributes }
+    local mtimes = { ["/lib/new.epub"] = 2000, ["/lib/old.epub"] = 1000 }
+    lfs_stub.dir = function(path)
+        local entries = { ".", ".." }
+        if path == "/lib" then entries[3], entries[4] = "new.epub", "old.epub" end
+        local i = 0
+        return function() i = i + 1; return entries[i] end
+    end
+    lfs_stub.attributes = function(fp, key)
+        if fp == "/lib" then
+            local a = { mode = "directory", modification = 0 }
+            if key then return a[key] end
+            return a
+        end
+        if not mtimes[fp] then return nil end
+        local a = { mode = "file", modification = mtimes[fp], access = mtimes[fp], size = 1 }
+        if key then return a[key] end
+        return a
+    end
+    _G._test_settings = { home_dir = "/lib", bookshelf_latest_walk_depth = 1 }
+    _G._test_bim_data = { ["/lib/new.epub"] = { title = "New" }, ["/lib/old.epub"] = { title = "Old" } }
+    package.loaded["readhistory"].hist = {}
+    local prio = { { key = "added_or_opened", reverse = true } }
+    local function first()
+        local out = Repo.getAll("/lib", 10, 0, prio)
+        return out[1] and out[1].filepath
+    end
+    assert(first() == "/lib/new.epub", "the newest file should lead, got " .. tostring(first()))
+    -- Open the old book now, then what Bookshelf:onCloseDocument runs.
+    package.loaded["readhistory"].hist = { { file = "/lib/old.epub", time = 3000 } }
+    Repo.invalidateProgressCache("/lib/old.epub")
+    Repo.invalidateReadStateCache()
+    assert(first() == "/lib/old.epub", "the book just opened did not move to the front, got "
+        .. tostring(first()))
+    -- A sort reading did not change keeps its cached listing.
+    local by_title = { { key = "title", reverse = false } }
+    local a1 = Repo.getAll("/lib", 10, 0, by_title)
+    Repo.invalidateReadStateCache()
+    local a2 = Repo.getAll("/lib", 10, 0, by_title)
+    assert(a1[1].filepath == a2[1].filepath, "title order changed")
+    package.loaded["readhistory"].hist = {}
+    lfs_stub.dir, lfs_stub.attributes = prev.dir, prev.attributes
+    _G._test_settings = {}
+    _G._test_bim_data = {}
+    Repo.invalidateWalkCache()
+end)
+
+test("effective rating: your own first, a Hardcover stand-in only when switched on (#538)", function()
+    local prev_hc = package.loaded["lib/bookshelf_hardcover"]
+    package.loaded["lib/bookshelf_hardcover"] = {
+        isAvailable = function() return true end,
+        getLink = function(fp) return fp == "/lib/linked.epub" and { book_id = 7 } or nil end,
+        getCachedRating = function(id) return id == 7 and 3.87 or nil end,
+    }
+    _G._test_settings = {}
+    assert(Repo.effectiveRating("/lib/linked.epub", 2) == 2, "your own rating must win")
+    assert(Repo.effectiveRating("/lib/linked.epub", nil) == nil, "the stand-in is off by default")
+    assert(Repo.effectiveRating("/lib/linked.epub", 0) == nil, "0 is no rating, not a rating")
+    _G._test_settings = { bookshelf_hardcover_rating_fallback = true }
+    assert(Repo.effectiveRating("/lib/linked.epub", nil) == 3.87, "the Hardcover average did not stand in")
+    assert(Repo.effectiveRating("/lib/linked.epub", 0) == 3.87, "0 should take the stand-in too")
+    assert(Repo.effectiveRating("/lib/other.epub", nil) == nil, "an unlinked book has no rating")
+    assert(Repo.effectiveRatingStars("/lib/linked.epub", nil) == 4, "3.87 rounds to 4 stars")
+    assert(Repo.effectiveRatingStars("/lib/linked.epub", 5) == 5)
+    package.loaded["lib/bookshelf_hardcover"].isAvailable = function() return false end
+    assert(Repo.effectiveRating("/lib/linked.epub", nil) == nil,
+        "with the Hardcover plugin gone nothing stands in")
+    package.loaded["lib/bookshelf_hardcover"] = prev_hc
+    _G._test_settings = {}
+end)
+
 test("buildBook: splits newline-separated authors and trims whitespace", function()
     -- BIM stores multiple authors newline-separated (see splitAuthors / #74).
     _G._test_bim_data = {
@@ -2617,6 +2733,36 @@ test("countByStatus: an unreadable Kindle library leaves the tally alone", funct
     local total = Repo.countByStatus()
     _teardownWalk()
     assert(total == 1, "unavailable source must contribute nothing, got " .. tostring(total))
+end)
+
+test("Ratings shelf: a linked book you have not rated files under its Hardcover stars (#538)", function()
+    local prev_hc = package.loaded["lib/bookshelf_hardcover"]
+    package.loaded["lib/bookshelf_hardcover"] = {
+        isAvailable = function() return true end,
+        getLink = function(fp) return fp == "/lib/linked.epub" and { book_id = 7 } or nil end,
+        getCachedRating = function(id) return id == 7 and 3.87 or nil end,
+    }
+    local function groupOf(fp)
+        Repo.invalidateWalkCache()
+        local groups = Repo.getRatings(20, 0)
+        for _i, g in ipairs(groups) do
+            for _j, b in ipairs(g.books_meta or g.books or {}) do
+                if b.filepath == fp then return g.series_name end
+            end
+        end
+    end
+    _setupWalk({ "linked.epub", "plain.epub" }, {}, false)
+    _G._test_settings.bookshelf_hardcover_rating_fallback = nil
+    local off = groupOf("/lib/linked.epub")
+    _G._test_settings.bookshelf_hardcover_rating_fallback = true
+    local on = groupOf("/lib/linked.epub")
+    local plain = groupOf("/lib/plain.epub")
+    _teardownWalk()
+    package.loaded["lib/bookshelf_hardcover"] = prev_hc
+    local four = ("\xE2\x98\x85"):rep(4)
+    assert(off == "Unrated", "with the stand-in off it is Unrated, got " .. tostring(off))
+    assert(on == four, "with it on it files under 4 stars, got " .. tostring(on))
+    assert(plain == "Unrated", "an unlinked book stays Unrated, got " .. tostring(plain))
 end)
 
 test("countFinishedBooks: a book finished on the Kindle counts as finished", function()
