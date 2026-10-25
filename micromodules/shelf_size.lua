@@ -102,7 +102,7 @@ local function _fitStatusRow(mw, scale_pct, counts, gen)
     local cols = n
     if widest > usable then
         cols = 2
-        _, hs, cs = widestAt(100)
+        local _w; _w, hs, cs = widestAt(100)
     end
     _fit_memo[key] = { hs, cs, cols }
     return hs, cs, cols
@@ -214,6 +214,8 @@ return {
     -- Tests drive the background count through this; not part of the spec.
     _getCounts = getCounts,
     key   = "shelf_size", -- stable id stored in user menus; never change it
+    -- Text: unreadable one grid column wide (truncates or breaks words).
+    min_w = 2,
     title = _("Shelf size"),
     summary = _("From your library. Works offline."),
     -- No height input is needed: the status table's wrap decision is purely

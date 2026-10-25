@@ -17,8 +17,8 @@ t.test("the browser has a pick mode", function()
 end)
 
 t.test("the browser's title is the collection, as its settings row", function()
-    assert(src:find('title = self.opts.pick and _("Swap for") or _("Ornament collection"),', 1, true),
-        "the browser is not titled Ornament collection")
+    assert(src:find('title = self.opts.title or (self.opts.pick and _("Swap for") or _("Ornament collection")),', 1, true),
+        "the browser is not titled Ornament collection (or the caller's title)")
 end)
 
 local function method(text, name)
@@ -102,6 +102,19 @@ t.test("the long-press menu's Swap hands the browser the shelf's pool", function
     local m = io.open("lib/bookshelf_ornament_menu.lua"):read("*a")
     assert(m:find("ornamentsFor(shelf)", 1, true) and m:find("pool = ", 1, true),
         "Swap offers pieces this shelf never deals")
+end)
+
+t.test("opening shows a message at once and builds the browser after it", function()
+    -- Decoding a page of pieces takes seconds on a PW5; with nothing on screen
+    -- meanwhile, choosing the Ornament module felt like a crash (maintainer).
+    local show = src:match("\nfunction Browser%.show%(on_change, opts%)\n(.-)\nend\n")
+    assert(show, "Browser.show not found")
+    local msg = show:find('_("Loading ornaments', 1, true)
+    local paint = show:find("forceRePaint", 1, true)
+    local later = show:find("nextTick", 1, true)
+    local build = show:find("Browser._open", 1, true)
+    assert(msg and paint and later and build, "no loading message before the build")
+    assert(msg < paint and paint < later and later < build, "the message must paint before the build starts")
 end)
 
 t.done()

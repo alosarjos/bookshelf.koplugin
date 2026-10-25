@@ -1173,6 +1173,54 @@ t.test("software night mode blends the inverted tint through C, not a solid fill
     package.loaded["ffi/blitbuffer"] = nil
 end)
 
+t.test("on the screen itself a translucent panel is blended in a copy", function()
+    -- A blend on a Kindle's framebuffer reads every pixel back from slow
+    -- memory: the micro-modules view's full-screen panel and the layout
+    -- editor's fade cost ~650 ms on a PW5, where the same blend in a copy is
+    -- 23 ms (rig device/editdrive.koplugin). The area is read once, blended
+    -- in memory and written back.
+    local W = fresh()
+    local made = {}
+    package.loaded["ffi/blitbuffer"] = {
+        ColorRGB32 = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end,
+        new = function(w, h)
+            local c = { w = w, h = h, ops = {} }
+            function c:blitFrom(_s, ...) self.ops[#self.ops + 1] = { "read", ... } end
+            function c:blendRectRGB32(x, y, bw, bh) self.ops[#self.ops + 1] = { "blend", x, y, bw, bh } end
+            function c:free() self.freed = true end
+            made[#made + 1] = c
+            return c
+        end }
+    local calls = {}
+    local screen = {
+        getType = function() return 1 end, getInverse = function() return 0 end,
+        canUseCbb = function() return true end,
+        paintRect = function() calls[#calls + 1] = "paint" end,
+        blendRectRGB32 = function() calls[#calls + 1] = "blend on screen" end,
+        blitFrom = function(_self, _src, x, y) calls[#calls + 1] = "write " .. x .. "," .. y end,
+    }
+    package.loaded["device"] = { screen = { bb = screen } }
+    local colour = { getColorRGB32 = function(self) return self end,
+                     getR = function() return 0 end, getG = function() return 0 end,
+                     getB = function() return 0 end }
+    eq(W.scrim(screen, 100, 200, 400, 300, colour, 0.4), true)
+    eq(#made, 1, "no copy was made")
+    eq(made[1].w, 400); eq(made[1].h, 300)
+    eq(made[1].ops[1][1], "read")
+    eq(made[1].ops[2][1], "blend"); eq(made[1].ops[2][2], 0); eq(made[1].ops[2][3], 0)
+    eq(table.concat(calls, "|"), "write 100,200", "blended on the screen, or not written back")
+    assert(made[1].freed, "the copy was kept")
+    -- Not the screen (a scratch buffer of the shelf's own): blended in place.
+    calls, made = {}, {}
+    local other = { getType = function() return 1 end, getInverse = function() return 0 end,
+        canUseCbb = function() return true end,
+        blendRectRGB32 = function() calls[#calls + 1] = "blend" end }
+    eq(W.scrim(other, 0, 0, 400, 300, colour, 0.4), true)
+    eq(#made, 0); eq(calls[1], "blend")
+    package.loaded["device"] = nil
+    package.loaded["ffi/blitbuffer"] = nil
+end)
+
 -- Issue 520: KOReader turns the C blitter off on 24-bit PocketBooks (the Era
 -- Color), and every panel was then painted solid, by day as well as at night.
 -- _lutBlend blends the bytes itself. Needs LuaJIT's ffi for a real buffer.
@@ -1940,6 +1988,40 @@ t.test("without shelf themes the cache keeps one picture, as before", function()
     eq(renders(), 3)
     eq(W._bg2, nil, "a second picture was kept with no shelf themes")
     os.execute("rm -rf '" .. d .. "'"); package.loaded["ffi/blitbuffer"] = nil
+end)
+
+t.test("a decoded picture is kept on disk, so the next session doesn't decode it", function()
+    local W, d, renders = twoSetup(false)
+    local disk = {}
+    W._disk_cache = { load = function(k) return disk[k] end,
+                      store = function(k, bb) disk[k] = bb; return true end }
+    local mtime = 1
+    package.loaded["libs/libkoreader-lfs"] = { attributes = function() return { modification = mtime, size = 10 } end }
+    package.loaded["device"] = { screen = { bb = { getType = function() return 1 end } } }
+    W.bg("a.png", 100, 100, false)
+    eq(renders(), 1)
+    W.free(); W._bg, W._bg_key = nil, nil
+    W.bg("a.png", 100, 100, false)
+    eq(renders(), 1, "decoded again with the picture on disk")
+    -- An edited picture is decoded again.
+    W.free(); W._bg, W._bg_key = nil, nil
+    mtime = 2
+    W.bg("a.png", 100, 100, false)
+    eq(renders(), 2, "an edited picture came from the old copy")
+    package.loaded["libs/libkoreader-lfs"] = nil; package.loaded["device"] = nil
+    os.execute("rm -rf '" .. d .. "'"); package.loaded["ffi/blitbuffer"] = nil
+end)
+
+t.test("a panel's blur is kept on disk beside its picture, keyed on what made it", function()
+    local src = io.open("lib/bookshelf_wallpaper.lua"):read("*a")
+    local ff = src:match("\nlocal function frostFor%(x, y, w, h, tint%)\n(.-)\nend\n")
+    assert(ff, "frostFor moved")
+    assert(ff:find('fkey = string.format("frost:%s|%s|%d,%d,%dx%d|%s|%s|%d/%d/%d", bg.dkey,', 1, true),
+        "the blur isn't keyed on its picture, mode, rect, tint and constants")
+    assert(ff:find("pcall(diskCache().store, fkey, bb)", 1, true), "never stored")
+    assert(src:find("widget.dkey = dkey", 1, true), "the picture doesn't carry its disk key")
+    -- Declared above frostFor: a local below its caller is a nil global there.
+    assert(src:find("local function diskCache", 1, true) < src:find("local function frostFor", 1, true))
 end)
 
 t.done()

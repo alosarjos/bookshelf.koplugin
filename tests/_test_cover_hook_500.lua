@@ -28,12 +28,12 @@ end)
 t.test("buildBookMeta trusts the wrapper's cover on a get_cover=false read", function()
     assert(repo:find('if has_cover ~= "Y" and not want_cover and _hookedCoverFor(bim, filepath, info) then', 1, true),
         "a cached-cover build still reads the database's no cover")
-    assert(repo:find("has_cover   = has_cover and not info.ignore_cover,", 1, true),
+    assert(repo:find("has_cover   = _recordHasCover(has_cover, info),", 1, true),
         "the record does not carry the wrapper's answer")
 end)
 
 t.test("the batched rows carry cover_fetched, and the memo goes with the walk cache", function()
-    assert(repo:find('"pages, description, has_meta, has_cover, ignore_cover, ignore_meta, cover_sizetag, " ..\n                "cover_fetched "', 1, true),
+    assert(repo:find('"pages, description, has_meta, has_cover, ignore_cover, ignore_meta, cover_sizetag, " ..\n                "cover_fetched, cover_w, cover_h "', 1, true),
         "the batch SELECT does not read cover_fetched")
     assert(repo:find("cover_fetched = col(16, i),", 1, true), "cover_fetched is not kept on the row")
     assert(repo:find("_hook_cover_memo   = {}", 1, true), "the per-file answers outlive a rescan")

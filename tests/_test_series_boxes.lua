@@ -322,6 +322,7 @@ H.test("the native planner paginates boxes as single slots and resumes inside co
         BookBinding=require("lib/bookshelf_book_binding"),
         Space=package.loaded["lib/bookshelf_space"],_gettime=function() return 0 end,
         _optsKey=function(o) return tostring(o.content_w)..":"..o.row_h end,
+        _suffixEntries=function() return nil end,
         _isFavourite=function() return false end,_flushLooks=function() end,
         _hydrate_cache={},_stable_checked={},SCAN_TAGS={},SHOWN_TAGS={},
         logger={dbg=function() end},require=function(name)
@@ -399,6 +400,13 @@ H.test("native row construction routes taps and projected shadows through the se
     for i,col in ipairs(columns) do
         for k,v in pairs(expected[i]) do H.eq(col[k],v) end
     end
+end)
+
+H.test("a box's sticker is kept between page turns, scaled in C", function()
+    local w = io.open("lib/bookshelf_series_box_widget.lua"):read("*a")
+    assert(w:find("local kept = _stickers[skey]", 1, true), "the sticker is built on every paint")
+    assert(not w:find(":scale(iw, ih)", 1, true), "Blitbuffer:scale (a Lua pixel loop) on the paint path")
+    assert(w:find('night and "n" or "d" }, "|")', 1, true), "the night sticker would serve the day")
 end)
 
 H.finish()

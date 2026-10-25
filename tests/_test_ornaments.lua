@@ -280,6 +280,82 @@ t.test("cache: within the scan TTL the folder is not listed again", function()
     os.execute("rm -rf '" .. d .. "'")
 end)
 
+-- The spine plan reaches listAll() itself, several times a plan (the deck's
+-- sync, a themed shelf's pool, the theme's hasPieces), and each call listed
+-- every pack's folder: 10-16% of a PW5 Genres turn, profiled. Inside the
+-- plan's window (allowRecent) the last scan stands for the scan TTL. Outside
+-- it listAll still looks every time: the browser and pack installs call it
+-- right after changing files.
+t.test("cache: listAll keeps its answer for the TTL only inside a plan's window", function()
+    local O = fresh()
+    local d = scratch()
+    O._data_dir = d
+    local listings = 0
+    O._lfs = setmetatable({
+        dir = function(...) listings = listings + 1; return lfs_shim.dir(...) end,
+    }, { __index = lfs_shim })
+    O.ensureTemplate()
+    local t = 1000
+    O._clock = function() return t end
+    O.SCAN_TTL = 15
+    eq(#O.listAll(), 2)
+    local n1 = listings
+    O.listAll()
+    eq(listings, n1 + 1, "outside a plan, listAll looks every time")
+    O.allowRecent(true)
+    O.listAll(); O.listAll()
+    eq(listings, n1 + 1, "inside the window, the last scan stands")
+    O.invalidate()
+    O.listAll()
+    eq(listings, n1 + 2, "invalidate() still forces a fresh look")
+    t = t + 15
+    O.allowRecent(true)
+    O.listAll()
+    eq(listings, n1 + 3, "and so does the TTL running out")
+    t = t + 3
+    O.listAll()
+    eq(listings, n1 + 4, "a window left open closes on its own")
+    O.allowRecent(true); O.allowRecent(false)
+    O.listAll()
+    eq(listings, n1 + 5, "closing the window ends it")
+    os.execute("rm -rf '" .. d .. "'")
+end)
+
+t.test("allowRecent reports whether a window was already open, so callers can nest", function()
+    local O = fresh()
+    local t = 1000
+    O._clock = function() return t end
+    assert(not O.allowRecent(true), "nothing open before")
+    assert(O.allowRecent(true), "already open")
+    O.allowRecent(false)
+    assert(not O.allowRecent(true), "closed again")
+end)
+
+t.test("a rebuild and a page turn hold the window open for their whole run", function()
+    local w = io.open("lib/bookshelf_widget.lua"):read("*a")
+    for _i, name in ipairs({ "BookshelfWidget:_rebuild", "BookshelfWidget:_swapShelvesInPlace" }) do
+        local f = w:match("\nfunction " .. name:gsub("[%.%:]", "%%%0") .. "%(.-\n")
+        assert(f, name .. " not found")
+        local at = w:find("\nfunction " .. name, 1, true)
+        local head = w:sub(at, at + 600)
+        assert(head:find("self:_ornScanWindow()", 1, true), name .. " does not open the window first")
+    end
+    local helper = w:match("\nfunction BookshelfWidget:_ornScanWindow%(%)\n(.-)\nend\n")
+    assert(helper and helper:find("allowRecent(true)", 1, true) and helper:find("nextTick", 1, true),
+        "the window must close on the next tick")
+end)
+
+t.test("the spine plan opens and closes the window", function()
+    local src = io.open("lib/bookshelf_spine_shelf.lua"):read("*a")
+    local body = src:match("\nfunction SpineShelf%.plan%(items, opts%)\n(.-)\nend\n")
+    assert(body, "plan not found")
+    local open_at = body:find("allowRecent(true)", 1, true)
+    local close_at = body:find("allowRecent(false)", 1, true)
+    assert(open_at and close_at and open_at < close_at, "the plan does not bracket itself")
+    assert(body:find("not orn_scan_was_open then OrnScan.allowRecent(false)", 1, true),
+        "the plan must not close a window its caller opened")
+end)
+
 t.test("cache: a removal is noticed even when the mtime does not move", function()
     local O = fresh()
     local d = scratch()

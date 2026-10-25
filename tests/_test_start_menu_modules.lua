@@ -35,6 +35,47 @@ put("bad_keepopen.lua", [[return { key = "badkeep", title = "Bad keep_open",
 put("fn_keepopen.lua", [[return { key = "fnkeep", title = "Function keep_open",
     render = function() end, on_tap = function() end,
     keep_open = function() return true end }]])
+-- Grid size hints: optional, positive whole numbers of cells.
+put("min_ok.lua", [[return { key = "minok", title = "Min ok",
+    render = function() end, min_w = 2, min_h = 1 }]])
+put("min_zero.lua", [[return { key = "minzero", title = "Min zero",
+    render = function() end, min_w = 0 }]])
+put("min_str.lua", [[return { key = "minstr", title = "Min string",
+    render = function() end, min_w = "2" }]])
+put("min_frac.lua", [[return { key = "minfrac", title = "Min fraction",
+    render = function() end, min_h = 1.5 }]])
+-- bare: draw without the card (an ornament over the wallpaper); a boolean.
+put("bare_ok.lua", [[return { key = "bareok", title = "Bare ok",
+    render = function() end, bare = true }]])
+put("bare_bad.lua", [[return { key = "barebad", title = "Bare bad",
+    render = function() end, bare = "yes" }]])
+-- A module file is called with its own folder, so a pack can dofile its
+-- shared code: local MODULE_DIR = ...
+put("dirarg.lua", [[local dir = ...
+return { key = "dirarg", title = "Dir arg", render = function() end, _dir = dir }]])
+-- on_minute: the heartbeat hook; a function when present.
+put("minute_ok.lua", [[return { key = "minuteok", title = "Minute ok",
+    render = function() end, on_minute = function() end }]])
+put("minute_bad.lua", [[return { key = "minutebad", title = "Minute bad",
+    render = function() end, on_minute = 1 }]])
+-- A file may return a LIST of modules (a pack that finds out at load what
+-- it can offer); each entry is checked on its own. An empty list is nothing.
+put("list.lua", [[return {
+    { key = "lista", title = "List A", render = function() end },
+    { key = "listb", title = "List B", render = function() end },
+    { key = "listbad", title = "List bad" },
+}]])
+put("empty_list.lua", [[return {}]])
+-- in_place: painted straight onto its card (popups anchored to it land right).
+put("inplace_ok.lua", [[return { key = "inplaceok", title = "In place ok",
+    render = function() end, in_place = true }]])
+put("inplace_bad.lua", [[return { key = "inplacebad", title = "In place bad",
+    render = function() end, in_place = 1 }]])
+-- colors: the module's own colour rows (bookshelf_module_card).
+put("colors_ok.lua", [[return { key = "colorsok", title = "Colors ok",
+    render = function() end, colors = { { id = "bar", text = "Bar", default = { hex = "#336699" } } } }]])
+put("colors_bad.lua", [[return { key = "colorsbad", title = "Colors bad",
+    render = function() end, colors = { { id = "bg", text = "Takes a card key" } } }]])
 names[#names + 1] = "README.md" -- non-lua entries must be ignored
 put("README.md", "not a module")
 
@@ -74,9 +115,27 @@ t.test("scan registers valid specs and skips broken/invalid ones", function()
     assert(reg["fnkeep"] ~= nil
         and type(reg["fnkeep"].keep_open) == "function",
         "function keep_open must register")
+    assert(reg["minok"] and reg["minok"].min_w == 2, "whole-number size hints must register")
+    assert(reg["minzero"] == nil, "min_w 0 must be skipped")
+    assert(reg["minstr"] == nil, "a string min_w must be skipped")
+    assert(reg["minfrac"] == nil, "a fractional min_h must be skipped")
+    assert(reg["bareok"] and reg["bareok"].bare == true, "a boolean bare must register")
+    assert(reg["barebad"] == nil, "a non-boolean bare must be skipped")
     local n = 0
     for _k in pairs(reg) do n = n + 1 end
-    assert(n == 3, "exactly three modules must have registered, got " .. n)
+    assert(reg["dirarg"] and reg["dirarg"]._dir == tmpdir,
+        "a module file must receive its folder as ..., got "
+        .. tostring(reg["dirarg"] and reg["dirarg"]._dir))
+    assert(reg["minuteok"] and type(reg["minuteok"].on_minute) == "function",
+        "a function on_minute must register")
+    assert(reg["minutebad"] == nil, "a non-function on_minute must be skipped")
+    assert(reg["lista"] and reg["listb"], "every module in a list file must register")
+    assert(reg["listbad"] == nil, "an invalid entry in a list is skipped on its own")
+    assert(reg["inplaceok"] and reg["inplaceok"].in_place == true, "a boolean in_place must register")
+    assert(reg["inplacebad"] == nil, "a non-boolean in_place must be skipped")
+    assert(reg["colorsok"] and reg["colorsok"].colors[1].id == "bar", "a valid colors list must register")
+    assert(reg["colorsbad"] == nil, "a colour taking a card key must be skipped")
+    assert(n == 11, "exactly eleven modules must have registered, got " .. n)
 end)
 
 t.test("menu-open generation hook", function()
