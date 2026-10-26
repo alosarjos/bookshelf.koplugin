@@ -18,10 +18,19 @@ package.loaded["lib/bookshelf_module_cache"] = {
     read = function(k) return cache[k] end,
     save = function(k, v) cache[k] = v end,
 }
-local any_enabled = true
+-- any_enabled: the three original switches; on_shelf: On the shelf.
+local any_enabled, on_shelf = true, true
 package.loaded["lib/bookshelf_settings_store"] = {
-    microAnyEnabled = function() return any_enabled end,
+    microInStartMenu = function() return any_enabled end,
+    microInHero = function() return false end,
+    microFullscreenButton = function() return false end,
+    microOnShelf = function() return on_shelf end,
+    microAnyEnabled = function() return any_enabled or on_shelf end,
 }
+
+-- The shelves, for modules standing among a shelf's books (see below).
+local shelf_tabs = {}
+package.loaded["lib/bookshelf_tab_model"] = { load = function() return shelf_tabs end }
 
 local M = dofile("lib/bookshelf_start_menu_modules.lua")
 -- The bundled dir is resolved from the loader's own path.
@@ -125,9 +134,41 @@ t.test("a file that no longer defines its key falls back to the full scan", func
 end)
 
 t.test("with every surface off nothing is run", function()
-    any_enabled = false
+    any_enabled, on_shelf = false, false
     fresh()
     assert(M.get("a") == nil and #ran == 0, "ran " .. #ran)
+    any_enabled, on_shelf = true, true
+end)
+
+t.test("On the shelf off: a shelf's modules load nothing", function()
+    any_enabled, on_shelf = false, false
+    shelf_tabs = { { id = "recent", shelf_modules = { { id = "sm_3", module = "a" } } } }
+    fresh()
+    assert(M.get("a") == nil and #ran == 0, "On the shelf is off, yet module files ran")
+    any_enabled, on_shelf, shelf_tabs = true, true, {}
+end)
+
+-- Modules among a shelf's books (6.0) are a surface no switch covers: with the
+-- three switches off they found no definition and showed their key ("shelf")
+-- in place of themselves (maintainer, PW5).
+t.test("a module among a shelf's books loads with every switch off", function()
+    any_enabled = false
+    shelf_tabs = { { id = "recent", shelf_modules = { { id = "sm_3", module = "a" } } } }
+    fresh()
+    assert(M.get("a") ~= nil, "a shelf's module had no definition with the switches off")
+    shelf_tabs = { { id = "recent", shelf_modules = {} }, { id = "home" } }
+    fresh()
+    assert(M.get("a") == nil and #ran == 0, "no modules in use anywhere, yet files ran")
+    any_enabled, shelf_tabs = true, {}
+end)
+
+t.test("the module picker lists every module, whatever the switches", function()
+    -- Opening it is asking for modules: adding the first one to a shelf with
+    -- every switch off found an empty picker.
+    any_enabled = false
+    fresh()
+    local keys = M.keys()
+    assert(#keys >= 5, "the picker found " .. #keys .. " modules")
     any_enabled = true
 end)
 

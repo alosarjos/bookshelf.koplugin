@@ -3540,6 +3540,9 @@ function BookshelfWidget:_pollExtraction()
                 hero_fp = Repo.currentFilepath and Repo.currentFilepath()
             end
             if hero_fp and ready_paths[hero_fp] then
+                -- Its record from before the extraction is not what BIM now
+                -- has (Refresh metadata's rebuild memoised it with no row).
+                self._hero_current_memo = nil
                 self:_swapHeroInPlace()
             end
         end
@@ -5465,6 +5468,11 @@ function BookshelfWidget:_buildExpandedStrip(content_w, strip_h, PAD)
         Tap = { GestureRange:new{ ges = "tap", range = strip_dimen } },
     }
     function strip:onTap()
+        -- "Swipe down leaves full screen shelves" off: full screen stays put,
+        -- as for the swipe; the top panel comes back from the shelf bar's
+        -- book icon or a gesture (issue 554: a tap on the status line brought
+        -- it back).
+        if not BookshelfSettings.nilOrTrue("expanded_swipe_back") then return true end
         bw:_setExpanded(false)
         bw:_rebuild()
         UIManager:setDirty(bw, "ui")
@@ -13882,6 +13890,7 @@ function BookshelfWidget:paintTo(bb, x, y)
     local Underlay = require("lib/bookshelf_underlay")
     if Underlay.covered() then Underlay.invalidate() end
     local clip_rects = self:_takePaintClip(bb)
+    if not clip_rects and bb == Screen.bb then Underlay.shelfPainted() end
     -- Diag: one-shot first-paint marker for cold-start traces. The init
     -- log fires at end of :init() (well before the paint actually
     -- happens), and the Bookshelf:show TOTAL fires before UIManager has
@@ -22369,6 +22378,8 @@ function BookshelfWidget:_buildBookEditTab(book, modal, avail_w, avail_h)
         if ok_bim and BIM and BIM.deleteBookInfo then
             pcall(function() BIM:deleteBookInfo(book.filepath) end)
         end
+        -- And from the batch rows, or the extraction check still finds it.
+        Repo.forgetBook(book.filepath)
         -- Asked for: the cover comes back too, plugin format or not.
         bw:_allowCoverFetch(book.filepath)
         pcall(function() require("lib/bookshelf_scaled_cover_cache"):drop(book.filepath) end)
@@ -23430,6 +23441,7 @@ function BookshelfWidget:_applyCoverCandidate(book, candidate, modal, state)
                     local sw = Screen:getWidth()
                     local cw = math.max(1, math.floor(sw * 0.5))
                     if BIM.deleteBookInfo then BIM:deleteBookInfo(book.filepath) end
+                    Repo.forgetBook(book.filepath)
                     BIM:extractBookInfo(book.filepath,
                         { max_cover_w = cw, max_cover_h = math.floor(cw * 1.5) })
                 end
