@@ -99,11 +99,27 @@ jobs:
         if: steps.check_merged.outputs.already_merged == 'false'
         run: |
           TAG="${{ steps.find_tag.outputs.tag }}"
-          if ! git merge --no-ff "refs/upstream-sync/$TAG" -m "Merge upstream $TAG into fork"; then
+          # --no-commit so upstream's .github/workflows changes can be dropped
+          # before committing: GITHUB_TOKEN cannot push commits that add or
+          # modify workflow files (no `workflows` permission is grantable to
+          # it), which is what broke the v6.2.0 sync (upstream added
+          # issue-labels.yml). The fork keeps its own workflows; conflicts
+          # confined to that directory are resolved the same way.
+          git merge --no-ff --no-commit "refs/upstream-sync/$TAG" || true
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "git merge of $TAG did not start -- needs manual review." >&2
+            exit 1
+          fi
+          git rm -rq --cached --ignore-unmatch -- .github/workflows
+          git checkout HEAD -- .github/workflows
+          git clean -fdq -- .github/workflows
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            git diff --name-only --diff-filter=U >&2
             git merge --abort
             echo "Merge conflict syncing $TAG -- needs manual resolution (see RELEASE.md)." >&2
             exit 1
           fi
+          git commit --no-edit -m "Merge upstream $TAG into fork"
 
           VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' _meta.lua || true)
           if [ -z "$VERSION" ]; then

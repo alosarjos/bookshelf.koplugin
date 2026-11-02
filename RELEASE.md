@@ -12,6 +12,10 @@ Actions → "Sync upstream & release" → "Run workflow", opcionalmente indicand
 3. Si no, hace `git merge --no-ff` de ese tag. Usa las traducciones tal como
    vienen de upstream -- **no** regenera `.pot`/`.po` ni traduce nada a mano
    (eso solo pasa en el proceso manual, paso 3 de más abajo).
+   Descarta cualquier cambio de upstream en `.github/workflows/` (el fork
+   conserva los suyos, también si hay conflicto ahí): `GITHUB_TOKEN` no puede
+   pushear commits que creen o modifiquen workflows, y eso rompió el sync de
+   v6.2.0 (upstream añadió `issue-labels.yml`).
 4. Corre el mismo gate que CI (`.github/actions/checks`): sintaxis LuaJIT,
    suite de tests, validación de `.po`. Un test listado en
    `.github/known_failing_tests.txt` (bug de upstream ya confirmado, no algo
