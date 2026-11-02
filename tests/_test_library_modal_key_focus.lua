@@ -5,6 +5,10 @@
 -- choice with a frame of its own, and a ring seeded on the first card while
 -- the choice was on another page read as that mark (review, 2026-10-09).
 package.path = "./?.lua;" .. package.path
+-- The strip's Press sends a gesture: an event and a point.
+package.loaded["ui/event"] = { new = function(_s, name, ...) return { name = name, args = { ... } } end }
+package.loaded["ui/geometry"] = { new = function(_s, t) return t end }
+package.loaded["ui/time"] = { now = function() return 0 end }
 local t  = dofile("tests/_helpers.lua").runner()
 local eq = dofile("tests/_helpers.lua").eq
 local src = io.open("lib/bookshelf_library_modal.lua"):read("*a")
@@ -14,7 +18,8 @@ local function method(name)
     assert(body, "LibraryModal:" .. name .. " not found")
     assert(load("local LibraryModal = ...\n" .. body))(LibraryModal)
 end
-for _i, n in ipairs({ "_revealFocus", "_gridNav", "_gridCols", "onGridFocusDown", "onGridFocusRight", "onGridPress" }) do
+for _i, n in ipairs({ "_revealFocus", "_cellsPerPage", "_gridNav", "_gridCols", "onGridFocusDown", "onGridFocusRight", "onGridPress",
+                      "onGridFocusUp", "onGridFocusLeft", "_stripPos", "refreshCell" }) do
     method(n)
 end
 
@@ -35,9 +40,16 @@ local function modal(focus, page, idx)
     return m
 end
 
-t.test("init leaves the ring hidden when the caller asks for focus on the first key", function()
-    assert(src:find("if total > 0 and not self.config.focus_on_key then self._dpad_idx = 1 end", 1, true),
-        "the focus is seeded at open even with focus_on_key")
+t.test("init leaves the ring hidden on every picker, until the first key", function()
+    -- Seeded on the first card, it read as that card chosen (the outline that
+    -- marks the one in use).
+    assert(not src:find("self._dpad_idx = 1", 1, true), "the focus is seeded at open")
+end)
+
+t.test("with no focus_on_key the first key shows the ring on the page's first card", function()
+    local m = modal(nil)
+    m:onGridFocusDown()
+    eq(m._dpad_idx, 1)
 end)
 
 t.test("the first key press shows the focus on the caller's cell, without moving", function()
@@ -64,6 +76,54 @@ t.test("without focus_on_key nothing changes: a press moves at once", function()
     local m = modal(nil, 1, 1)
     m:onGridFocusDown()
     eq(m._dpad_idx, 2)
+end)
+
+-- STYLE.md: every popup takes the keys. The strip (its chips, a sort switch,
+-- header buttons) could not be reached: Up at the grid's top row now goes
+-- there, Down from its last row back to the grid, and Press taps it.
+t.test("Up from the grid's top row reaches the strip; Down goes back; Press taps", function()
+    local m = modal(nil, 1, 1)
+    local pressed = {}
+    local function w(name) return { name = name, dimen = { x = 0, y = 0, w = 10, h = 10 },
+        handleEvent = function(_s, ev) if ev.args and ev.args[1] and ev.args[1].ges == "tap" then pressed[#pressed + 1] = name end; return true end } end
+    m._strip_layout = { { w("A-Z"), w("Most") }, { w("Add") } }
+    m:onGridFocusUp()
+    eq(m._focus_zone, "strip"); eq(m._strip_row, 2)
+    m:onGridFocusUp()
+    eq(m._strip_row, 1)
+    m:onGridFocusRight()
+    eq(m._strip_col, 2)
+    m:onGridPress()
+    eq(pressed[1], "Most")
+    m:onGridFocusDown(); m:onGridFocusDown()
+    eq(m._focus_zone, "grid"); eq(m._dpad_idx, 1)
+end)
+
+t.test("the grid's ring shows only while the keys are on the grid", function()
+    assert(src:find('local focused = modal._focus_zone == "grid" and modal._dpad_idx ~= nil and idx == modal._dpad_idx', 1, true),
+        "the grid keeps its ring while the footer or strip has the keys")
+end)
+
+-- Perf review 2026-10-31: a tick in a multi-select picker built the whole
+-- picker again and refreshed all of it, for one card.
+t.test("refreshCell draws one card again and refreshes its box; off the page, all", function()
+    local dirty = {}
+    package.loaded["ui/uimanager"] = { setDirty = function(_s, _w, f) dirty[#dirty + 1] = { f() } end }
+    -- the method was loaded before the stub: give it one through its globals
+    UIManager = package.loaded["ui/uimanager"]
+    local m = modal(nil, 1, nil)
+    local item = { value = "Crime" }
+    local ic = { dimen = { x = 10, y = 20, w = 100, h = 50 } }
+    m._cell_slots = { [item] = { ic = ic, idx = 3 } }
+    m._build_cell = function(idx, it) return { built = idx, item = it } end
+    m:refreshCell(item)
+    eq(ic[1].built, 3)
+    eq(#dirty, 1); eq(dirty[1][1], "ui"); eq(dirty[1][2].w, 100)
+    eq(m.refreshes, 0, "the whole picker was built again")
+    m:refreshCell({ value = "elsewhere" })
+    eq(m.refreshes, 1, "a card off the page did not fall back to a full refresh")
+    local ed = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
+    assert(ed:find("modal:refreshCell(item)", 1, true), "the filter picker's tick refreshes the whole picker")
 end)
 
 t.done()

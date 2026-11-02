@@ -107,7 +107,7 @@ local function helpers_env(colour, night)
     }, { __index = _G })
     local code = "local function _isNight() return " .. tostring(night) .. " end\n"
         .. grab("_byteToScreenPct") .. grab("_rawToScreenPct") .. grab("_colorScreen")
-        .. grab("_shownHex") .. grab("_valueText")
+        .. grab("_shownHex") .. grab("_shadeName") .. grab("_valueText")
         .. "return _valueText, _colorScreen"
     return assert(load(code, "vt", "t", env))()
 end
@@ -115,12 +115,15 @@ end
 t.test("a colour screen shows every value as the palette's hex, a grey too", function()
     local vt = helpers_env(true, false)
     eq(vt({ grey = 0xFF }), "#FFFFFF"); eq(vt({ grey = 0x40 }), "#404040")
-    eq(vt({ hex = "#228b22" }), "#228B22"); eq(vt(nil), "default")
+    eq(vt({ hex = "#228b22" }), "#228B22"); eq(vt(nil), "Default")
 end)
 
-t.test("a greyscale screen shows every value as % black, a hex too", function()
+t.test("a greyscale screen names every value's grey in a word, a hex too", function()
+    -- Its picker is chips of grey now, so no "% black" number: a word.
     local vt = helpers_env(false, false)
-    eq(vt({ grey = 0x00 }), "100%"); eq(vt({ hex = "#B08050" }), "46%")
+    eq(vt({ grey = 0x00 }), "Black"); eq(vt({ grey = 0xFF }), "White")
+    eq(vt({ hex = "#B08050" }), "Gray", "a colour's grey (46% black)")
+    eq(vt({ grey = 0x40 }), "Dark gray"); eq(vt({ grey = 0xE0 }), "Light gray")
 end)
 
 t.test("the night slot shows what the picker shows: the stored colour turned back", function()
@@ -132,8 +135,9 @@ end)
 t.test("the picker's title, its palette and the rows ask one question of the screen", function()
     local picker = src:match("function Settings:_pickColor%(raw_key, field, default_pct, title,(.-)\nend\n")
     assert(picker:find("local colour = _colorScreen()", 1, true), "the picker asks the screen its own way")
-    assert(picker:find("if type(title) == \"table\" then title = colour and title[1] or title[2] end", 1, true),
-        "the title does not follow the palette")
+    -- Both screens pick from the palette, so both take the name: no row
+    -- passes a "(% black)" title any more (review 2026-10-31).
+    assert(not picker:find("type(title) == \"table\"", 1, true), "a title table is still unpacked")
     assert(picker:find("if colour then", 1, true), "the palette branch does not use the same answer")
     assert(not src:find('_pickColor%([^\n]*\n[^\n]*_%("[^"]+ %(%% black%)"%), touchmenu'),
         "a colour row still passes only a (% black) title")
@@ -147,32 +151,33 @@ t.test("an untouched colour's hex field opens on the colour its row shows", func
     -- The row read "Progress bar: #404040" and the field opened empty: the
     -- picker was only handed what was STORED, and a default is not stored.
     local picker = src:match("function Settings:_pickColor%(raw_key, field, default_pct, title,(.-)\nend\n")
-    assert(picker:find("hex_text = _shownHex(CoverProgress.rawColors()[field], raw_key)", 1, true),
+    assert(picker:find("hex_text = _shownHex(_paintedRaw(field), raw_key)", 1, true),
         "the field is not seeded from the row's own value")
-    assert(picker:find("wood and wood.special_tile or nil, hex_text)", 1, true),
+    assert(picker:find("wood and wood.special_tile or nil, hex_text,", 1, true),
         "the seed is not passed to the palette")
     local pal = io.open("lib/bookshelf_color_palette.lua"):read("*a")
     assert(pal:find("local initial_text = self.selected_hex or self.hex_text or \"\"", 1, true),
         "the palette does not start its hex field from hex_text")
-    assert(pal:find("special_tile, hex_text)\n        showColorPicker(self, title, current_hex, default_hex, on_apply, on_default, on_revert, touchmenu_instance, null_tile_label, white_hex, special_tile, hex_text)", 1, true),
+    assert(pal:find("special_tile, hex_text, opts)\n        showColorPicker(self, title, current_hex, default_hex, on_apply, on_default, on_revert, touchmenu_instance, null_tile_label, white_hex, special_tile, hex_text, opts)", 1, true),
         "the installed method drops hex_text")
     -- Seeding the field must not mark a swatch: only selected_hex does.
-    assert(pal:find("local is_selected = (hex == self.selected_hex)", 1, true))
+    assert(pal:find("local selected_hex = self.selected_hex", 1, true)
+        and pal:find("local is_selected = (hex == selected_hex)", 1, true))
 end)
 
-t.test("an untouched colour's % dialog opens on what is painted, not on the row's number", function()
+t.test("an untouched colour's greys open on what is painted, not on the row's number", function()
     -- The palette got this right (above) and the greyscale dialog did not: it
     -- opened on the default_pct each row passes in, and several of those had
     -- drifted from the painted defaults. Progress bar track: dialog 25%, shelf
     -- white (DEFAULT_TRACK grey 0xFF). Micro-module background: dialog 0%,
     -- shelf 0xEE. Its "Default N%" button said the same wrong number.
     local picker = src:match("function Settings:_pickColor%(raw_key, field, default_pct, title,(.-)\nend\n")
-    assert(picker:find("local shown_default = _rawToScreenPct(CoverProgress.rawColors()[field]) or default_pct", 1, true),
+    assert(picker:find("local shown_default = _rawToScreenPct(_paintedRaw(field)) or default_pct", 1, true),
         "the % dialog's default is not derived from the painted colour")
     assert(picker:find("local current = _rawToScreenPct(raw) or shown_default", 1, true),
         "an untouched colour still opens on the row's hardcoded number")
-    assert(picker:find("self:showNudgeDialog(title, current, 0, 100, shown_default,", 1, true),
-        "the dialog's Default button still offers the hardcoded number")
+    assert(picker:find("title, (not wood_on) and seenHex(current) or nil, nil,", 1, true),
+        "the greys do not open on the painted colour")
     -- The values that had drifted, through the same derivation:
     eq(pct({ grey = 0xFF }, false), 0, "the track paints white: 0% black, not 25")
     eq(pct({ grey = 0xEE }, false), 7, "the module background paints 0xEE: 7%, not 0")

@@ -122,12 +122,16 @@ t.test("cards are drawn with the module's own look", function()
     assert(src:find("colors = colors or {},", 1, true), "ctx.colors missing from the render")
 end)
 
-t.test("the palette icon is in the editor toolbar and the spine module menu", function()
+t.test("the colours menu is the editor toolbar's Style and the spine module menu's palette", function()
     local ed = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    assert(ed:find("self:_titleRow(title, face, width - 2 * self.margin, entry)", 1, true), "editor title")
+    assert(ed:find('if CardMenu.hasColours(entry) then', 1, true), "editor Style button")
+    assert(ed:find('on_tap = function() s:colors() end', 1, true), "Style doesn't open the colours")
     assert(ed:find('require("lib/bookshelf_module_card_menu").show(ctx)', 1, true), "editor opens the menu")
     local w = io.open("lib/bookshelf_widget.lua"):read("*a")
-    assert(w:find("d:addWidget(CardMenu.titleRow(", 1, true), "spine module menu title")
+    -- The spine module menu: Style on its bar (as the editor's toolbar).
+    assert(w:find('bar[#bar + 1] = { text = _("Style"), callback = function()', 1, true)
+           and w:find('require("lib/bookshelf_module_card_menu").show(HeroModules._ctx(bw, nil,', 1, true),
+        "spine module menu has no Style")
     assert(w:find("function host.ctx_for(entry)", 1, true), "a cover shelf's modules don't save to the shelf")
 end)
 

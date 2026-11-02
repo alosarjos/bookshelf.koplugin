@@ -33,6 +33,12 @@ local lfs_real = {
         return { mode = "file", modification = mt, size = size }
     end,
     mkdir = function(path) os.execute('mkdir -p "' .. path .. '"'); return true end,
+    -- A read marks a cover used (the sweep goes by last use, not by write).
+    touch = function(path, _atime, mtime)
+        _G.__mtimes = _G.__mtimes or {}
+        _G.__mtimes[path] = mtime or os.time()
+        return true
+    end,
     dir = function(path)
         local names, pipe = { ".", ".." }, io.popen('ls -A "' .. path .. '" 2>/dev/null')
         if pipe then
@@ -84,6 +90,8 @@ lfs_real.mkdir(DIR)
 lfs_real.mkdir(DIR .. "/cache")
 
 local Cache = require("lib/bookshelf_cover_disk_cache")
+-- Sweeps only where a test asks for one (sweep, _check), not on its writes.
+Cache._auto = false
 local BB = package.loaded["ffi/blitbuffer"]
 
 local STORE = DIR .. "/cache/bookshelf/scaled_covers"
@@ -239,7 +247,7 @@ end
 local function storeCount()
     local n = 0
     for e in lfs_real.dir(STORE) do
-        if e ~= "." and e ~= ".." then n = n + 1 end
+        if e:sub(1, 1) ~= "." then n = n + 1 end   -- not the tally
     end
     return n
 end
@@ -269,6 +277,28 @@ t.test("over budget, a deleted book's cover goes before a live one's", function(
     Cache.sweep()
     assert(Cache.load(live), "the live book's cover was evicted first")
     assert(not Cache.load(gone), "the deleted book's cover survived")
+end)
+
+-- PW5, 2026-10-30: the store was over its cap (118 MB), so every session's
+-- first write swept it, and an ornament's render (kept under
+-- "ornament:<path>|<mtime>|<size>|<w>x<h>", bookshelf_ornaments) named no
+-- file and went as an orphan. Each session decoded every piece again.
+t.test("over budget, a live ornament's render is not an orphan", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES = 32 * 1024 * 1024
+    Cache.ORNAMENT_MAX_BYTES = 32 * 1024 * 1024
+    local piece, dead = makeBook("cat.png"), makeBook("dog.png")
+    local key = "ornament:" .. piece .. "|123|456|50x60"
+    local dkey = "ornament:" .. dead .. "|1|2|5x5"
+    Cache.store(key, makeBB(16, 16, 1))
+    Cache.store(dkey, makeBB(16, 16, 2))
+    ageOf(key, 100)                 -- the live piece's is the OLDER
+    ageOf(dkey, 900)
+    os.remove(dead)
+    Cache.ORNAMENT_MAX_BYTES = 400  -- room for one
+    Cache.sweep()
+    assert(Cache.load(key), "a live ornament's render went as an orphan")
+    assert(not Cache.load(dkey), "a deleted piece's render survived")
 end)
 
 t.test("with no orphans, the oldest goes first", function()
@@ -303,6 +333,151 @@ t.test("a file with no usable header is treated as an orphan", function()
     if still then still:close() end
     assert(not still, "an unreadable file survived a prune")
     assert(Cache.load(live), "a usable cover was dropped in favour of junk")
+end)
+
+-- PW5, 2026-10-31: the store held 59 MB of covers and 32 MB of ornament
+-- renders (the ornament library's previews among them) against 96 MB, and
+-- went by write time: a cover on Home, read every day but written weeks ago,
+-- went first and was decoded again on the next visit (a first switch to a
+-- shelf 2-8 s after a restart).
+t.test("ornament renders have a budget of their own and never push covers out", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES = 32 * 1024 * 1024
+    Cache.ORNAMENT_MAX_BYTES = 32 * 1024 * 1024
+    local c1, c2 = makeBook("c1.epub"), makeBook("c2.epub")
+    Cache.store(c1, makeBB(16, 16, 1)); Cache.store(c2, makeBB(16, 16, 2))
+    ageOf(c1, 100); ageOf(c2, 200)
+    local pieces = {}
+    for i = 1, 3 do
+        local key = "ornament:" .. makeBook("p" .. i .. ".png") .. "|1|2|16x16"
+        Cache.store(key, makeBB(16, 16, i)); ageOf(key, 900 + i)
+        pieces[i] = key
+    end
+    Cache.MAX_BYTES = 1000          -- the two covers fit
+    Cache.ORNAMENT_MAX_BYTES = 400  -- one render fits
+    Cache.sweep()
+    assert(Cache.load(c1) and Cache.load(c2), "ornament renders pushed a cover out")
+    assert(not Cache.load(pieces[1]) and not Cache.load(pieces[2]), "renders past their budget stayed")
+    assert(Cache.load(pieces[3]), "the newest render went")
+end)
+
+t.test("a cover read lately is kept over one written later and not read", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES = 32 * 1024 * 1024
+    local used, unused = makeBook("used.epub"), makeBook("unused.epub")
+    Cache.store(used, makeBB(16, 16, 1)); Cache.store(unused, makeBB(16, 16, 2))
+    ageOf(used, 100); ageOf(unused, 900)
+    assert(Cache.load(used))
+    Cache.MAX_BYTES = 400
+    Cache.sweep()
+    assert(Cache.load(used), "a cover in use went because it was written first")
+    assert(not Cache.load(unused), "the unread cover stayed")
+end)
+
+-- 6.0.4 kept ornament renders under a cover's file name; under the names
+-- they have now nothing reads those again, so they go first.
+t.test("an ornament render under a cover's file name is an orphan", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES = 32 * 1024 * 1024
+    local live = makeBook("keep.epub")
+    local piece = makeBook("old_piece.png")
+    Cache.store(live, makeBB(16, 16, 1)); ageOf(live, 100)
+    -- What 6.0.4 wrote: the render, under a plain hash name.
+    local key = "ornament:" .. piece .. "|1|2|16x16"
+    Cache.store(key, makeBB(16, 16, 2))
+    local p = fileFor(key)
+    local legacy = p:gsub("/o([0-9a-f]+_%d+)$", "/%1")
+    assert(legacy ~= p, "the render's file has no ornament name")
+    os.rename(p, legacy); _G.__mtimes[legacy] = 900
+    Cache.MAX_BYTES = 400
+    Cache.sweep()
+    assert(Cache.load(live), "a cover went before a render nothing reads")
+    local f = io.open(legacy, "rb"); if f then f:close() end
+    assert(not f, "the old render stayed")
+end)
+
+-- A full disk crashed a PW5 (2026-10-28); 96 MB of covers is a fair part
+-- of what a nearly full device has left. The budgets shrink to a share of
+-- the free space plus what the store already holds.
+t.test("on a nearly full disk the store keeps to a share of the room", function()
+    local function three()
+        Cache.clear(); _G.__mtimes = {}
+        Cache.MAX_BYTES, Cache.ORNAMENT_MAX_BYTES = 32 * 1024 * 1024, 32 * 1024 * 1024
+        local books = {}
+        for i = 1, 3 do
+            books[i] = makeBook("room" .. i .. ".epub")
+            Cache.store(books[i], makeBB(16, 16, i)); ageOf(books[i], 100 * i)
+        end
+        Cache.MAX_BYTES, Cache.ORNAMENT_MAX_BYTES = 1200, 1200
+        return books
+    end
+    local real_free = Cache._freeBytes
+    local books = three()
+    Cache._freeBytes = function() return 1024 * 1024 * 1024 end
+    Cache.sweep()
+    assert(Cache.load(books[1]) and Cache.load(books[2]) and Cache.load(books[3]),
+        "plenty of room, yet covers went")
+    books = three()
+    Cache._freeBytes = function() return 0 end
+    Cache.sweep()
+    assert(not Cache.load(books[1]), "a full disk kept the whole store")
+    books = three()
+    Cache._freeBytes = function() return nil end   -- unknown: the caps as they are
+    Cache.sweep()
+    assert(Cache.load(books[1]) and Cache.load(books[3]), "an unknown free space shrank the store")
+    Cache._freeBytes = real_free
+end)
+
+-- PW5, 2026-10-31: a full store went over its cap by a few covers every
+-- session, and each time the sweep read every file's header (1,100 files,
+-- 2.7 s cold) in the middle of a shelf's first build. Over the cap it now
+-- goes down to a margin under it, so the next sessions stay under.
+t.test("a prune leaves room, so the next sessions do not prune again", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES, Cache.ORNAMENT_MAX_BYTES = 32 * 1024 * 1024, 32 * 1024 * 1024
+    local real_free = Cache._freeBytes
+    Cache._freeBytes = function() return nil end
+    local size
+    for i = 1, 10 do
+        local b = makeBook("h" .. i .. ".epub")
+        Cache.store(b, makeBB(16, 16, i)); ageOf(b, i)
+        size = size or #select(2, fileFor(b))
+    end
+    Cache.MAX_BYTES = size * 9          -- one over
+    Cache.sweep()
+    assert(storeCount() <= math.floor(9 * Cache.PRUNE_TO), "pruned to the cap, not under it: " .. storeCount())
+    Cache._freeBytes = real_free
+end)
+
+t.test("the automatic check waits, out of the shelf's build", function()
+    local src = io.open("lib/bookshelf_cover_disk_cache.lua"):read("*a")
+    local body = src:match("\nlocal function maybeSweep%(%)\n(.-)\nend\n")
+    assert(body and body:find("scheduleIn(M.SWEEP_DELAY, M._check)", 1, true),
+        "the sweep runs inside the write that set it off")
+end)
+
+-- PW5, 2026-10-31: under its cap, the session's sweep still listed and
+-- stat'd every file (1,100 files, 1.25 s cold) to learn it was under. A
+-- running tally of what is held answers that from one small file.
+t.test("under the cap, the check reads a tally, not the whole store", function()
+    Cache.clear(); _G.__mtimes = {}
+    Cache.MAX_BYTES, Cache.ORNAMENT_MAX_BYTES = 32 * 1024 * 1024, 32 * 1024 * 1024
+    local real_dir, real_free = lfs_real.dir, Cache._freeBytes
+    Cache._freeBytes = function() return nil end
+    Cache.store(makeBook("tally1.epub"), makeBB(16, 16, 1))
+    Cache.sweep()                     -- an exact tally
+    local listings = 0
+    lfs_real.dir = function(path) listings = listings + 1; return real_dir(path) end
+    Cache.store(makeBook("tally2.epub"), makeBB(16, 16, 2))
+    Cache._check()
+    assert(listings == 0, "an under-cap check listed the store")
+    -- Over the cap by the tally: the full sweep runs.
+    local size = #select(2, fileFor(BOOKS .. "/tally1.epub"))
+    Cache.MAX_BYTES = size
+    Cache._check()
+    assert(listings > 0, "over the cap, nothing was swept")
+    assert(storeCount() <= 2, "the sweep left the store over its cap")
+    lfs_real.dir, Cache._freeBytes = real_dir, real_free
 end)
 
 os.execute("rm -rf '" .. DIR .. "'")

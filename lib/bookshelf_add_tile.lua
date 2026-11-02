@@ -15,7 +15,6 @@
 -- the cards beside it.
 local Blitbuffer     = require("ffi/blitbuffer")
 local Device         = require("device")
-local Font           = require("ui/font")
 local Geom           = require("ui/geometry")
 local GestureRange   = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
@@ -32,6 +31,11 @@ local AddTile = InputContainer:extend{
     on_hold        = nil,
     is_selected    = false,  -- pressed / D-pad focus: a heavier outline
     reserve_shadow = true,   -- keep a card's shadow strip free (cover grid)
+    -- On a list, which draws its own panel under its rows: no shading of its
+    -- own, and the rows' ink (the panel's). Its own fill there was the page's
+    -- light paper, with black ink, on a dark panel (maintainer, PW5).
+    ink            = nil,
+    no_fill        = false,
 }
 
 -- dashes(len, dash, gap) -> list of { offset, length } covering [0, len):
@@ -79,6 +83,8 @@ end
 function AddTile:init()
     self.dimen = Geom:new{ w = self.width, h = self.height }
     self._fill, self._strength, self._ink = AddTile.shading()
+    if self.no_fill then self._fill = nil end
+    if type(self.ink) ~= "nil" then self._ink = self.ink end
     local reserve = self.reserve_shadow
         and require("lib/bookshelf_spine_widget").SHADOW_OFFSET or 0
     self._card_w = math.max(1, self.width - reserve)
@@ -91,10 +97,12 @@ function AddTile:init()
     -- Font:getFace scales by the screen itself, so hand it unscaled points.
     local px_per_pt = Screen:scaleBySize(100) / 100
     size = math.max(12, math.min(26, math.floor(size / px_per_pt)))
+    -- The Bookshelf UI font, as the menus are.
+    local face, bold = require("lib/bookshelf_fonts"):getFace("cfont", size, { bold = true })
     self._text = TextBoxWidget:new{
         text      = self.label or "",
-        face      = Font:getFace("cfont", size),
-        bold      = true,
+        face      = face,
+        bold      = bold,
         fgcolor   = self._ink,
         width     = math.max(1, self._card_w - 2 * pad),
         alignment = "center",
@@ -120,12 +128,12 @@ function AddTile:paintTo(bb, x, y)
     local dash, gap = Screen:scaleBySize(9), Screen:scaleBySize(6)
     local ink = self._ink or Blitbuffer.COLOR_DARK_GRAY
     for _i, d in ipairs(AddTile.dashes(w, dash, gap)) do
-        bb:paintRect(x + d[1], y, d[2], t, ink)
-        bb:paintRect(x + d[1], y + h - t, d[2], t, ink)
+        require("lib/bookshelf_color").paintRect(bb, x + d[1], y, d[2], t, ink)
+        require("lib/bookshelf_color").paintRect(bb, x + d[1], y + h - t, d[2], t, ink)
     end
     for _i, d in ipairs(AddTile.dashes(h, dash, gap)) do
-        bb:paintRect(x, y + d[1], t, d[2], ink)
-        bb:paintRect(x + w - t, y + d[1], t, d[2], ink)
+        require("lib/bookshelf_color").paintRect(bb, x, y + d[1], t, d[2], ink)
+        require("lib/bookshelf_color").paintRect(bb, x + w - t, y + d[1], t, d[2], ink)
     end
     local ts = self._text:getSize()
     self._text:paintTo(bb, x + math.floor((w - ts.w) / 2), y + math.floor((h - ts.h) / 2))

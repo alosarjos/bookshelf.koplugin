@@ -88,6 +88,9 @@ package.loaded["ui/uimanager"] = {
                                     refreshtype = refreshtype, region = region }
     end,
     setDirty = function(_, w, kind) ui_calls[#ui_calls + 1] = { op = "setDirty", w = w, kind = kind } end,
+    -- The nudge's preview waits for the taps to pause; here it runs at once.
+    scheduleIn = function(_, _t, f) f() end,
+    unschedule = function() end,
 }
 
 -- ButtonDialog: hand back the plain constructor table untouched. No
@@ -95,6 +98,15 @@ package.loaded["ui/uimanager"] = {
 -- guards both no-op exactly as they would for a dialog nobody ever dragged.
 package.loaded["ui/widget/buttondialog"] = {
     new = function(_, o) return o end,
+}
+-- The size nudges are a page now (Settings:_nudgePage over PageDialog):
+-- show() records the spec as the "dialog", the way ButtonDialog's stub does.
+package.loaded["lib/bookshelf_page_dialog"] = {
+    show = function(o)
+        o.refresh = function() end
+        package.loaded["ui/uimanager"]:show(o)
+        return o
+    end,
 }
 
 -- StartMenu / ReviewsModal: bespoke fakes wired up per-test below (the real
@@ -143,6 +155,13 @@ local function makePlugin(opts)
     plugin.hideMenu = function(self, _touchmenu_instance)
         return function() self.restore_count = self.restore_count + 1 end
     end
+    -- The colour palette (colour and greyscale screens alike): the call is
+    -- recorded, its callbacks driven by the tests.
+    plugin.showColorPicker = function(self, title, current_hex, default_hex, on_apply, on_default,
+                                      on_revert, menu, null_label, white_hex, special_tile, hex_text, popts)
+        self.picker = { title = title, current = current_hex, apply = on_apply, default = on_default,
+                        revert = on_revert, opts = popts or {} }
+    end
     plugin._openReaderStartMenu = function(self)
         self.reader_open_count = self.reader_open_count + 1
         StartMenuStub._live = makePreview()
@@ -154,7 +173,32 @@ end
 -- pickers lay out { {-10,-5,val,+5,+10}, {Cancel,Default,Apply} } (or the
 -- chip picker's {-10,-1,val,+1,+10}), but hunting by text rather than
 -- position keeps these tests honest about *what* they're calling.
+-- The size nudges are a page with a slider now: Cancel | Done in the
+-- footer ("Apply" is Done); a step of the old grid (+10, -5) is the slider
+-- moved by that much, Default the slider set to its default.
+local function pageBlocks(dialog)
+    return dialog.page and dialog.page().blocks
+end
+local function slider(dialog)
+    for _, b in ipairs(pageBlocks(dialog)) do
+        if b.type == "slider" then return b end
+    end
+end
 local function findButton(dialog, text)
+    if pageBlocks(dialog) then
+        if text == "Apply" then text = "Done" end
+        for _, f in ipairs(dialog.footer or {}) do
+            if f.text == text then return f end
+        end
+        if text == "Default" then
+            return { callback = function() local s = slider(dialog); s.on_change(s.default) end }
+        end
+        local n = text:match("^[%+%-]%d+$") and tonumber(text)
+        if n then
+            return { callback = function() local s = slider(dialog); s.on_change(s.value + n) end }
+        end
+        error("no button with text " .. tostring(text))
+    end
     for _, row in ipairs(dialog.buttons) do
         for _, b in ipairs(row) do
             if b.text == text then return b end
@@ -164,6 +208,10 @@ local function findButton(dialog, text)
 end
 
 local function nudgeLabel(dialog)
+    if pageBlocks(dialog) then
+        local s = slider(dialog)
+        return s.format(s.value)
+    end
     for _, row in ipairs(dialog.buttons) do
         for _, b in ipairs(row) do
             if b.enabled == false and b.text_func then return b.text_func() end
@@ -513,11 +561,8 @@ local function openChipColourDialog(row_label)
     end
     assert(row, "no colour row matching " .. row_label)
     row.callback(tm)
-    local dialog
-    for _, c in ipairs(ui_calls) do
-        if c.op == "show" and c.w and c.w.buttons then dialog = c.w end
-    end
-    assert(dialog, row_label .. ": no nudge dialog was shown")
+    local dialog = Settings._plugin.picker
+    assert(dialog, row_label .. ": no colour picker was shown")
     return dialog, bw, row, tm
 end
 
@@ -525,7 +570,7 @@ for _, row_label in ipairs({ "Selected shelf background", "Selected shelf text" 
     t.test(row_label .. ": nudging recolours the strip, never rebuilds the shelf",
     function()
         local dialog, bw = openChipColourDialog(row_label)
-        findButton(dialog, "+10").callback()
+        dialog.apply("#808080")
         assert(bw._chip_bar.recolour_count > 0,
             "the strip must be rebuilt in place so the new colour is painted")
         eq(bw.rebuild_count, 0,
@@ -534,7 +579,7 @@ for _, row_label in ipairs({ "Selected shelf background", "Selected shelf text" 
 
     t.test(row_label .. ": the refresh is scoped to the strip's rect", function()
         local dialog, _bw = openChipColourDialog(row_label)
-        findButton(dialog, "+10").callback()
+        dialog.apply("#808080")
         local scoped
         for _, c in ipairs(ui_calls) do
             if c.op == "setDirty" and type(c.kind) == "function" then
@@ -548,9 +593,9 @@ for _, row_label in ipairs({ "Selected shelf background", "Selected shelf text" 
 
     t.test(row_label .. ": the dialog opens below the strip, not over it", function()
         local dialog = openChipColourDialog(row_label)
-        assert(type(dialog.anchor) == "function",
-            "dialog must anchor to the chip bar rather than centring")
-        local rect, prefers_pop_down = dialog.anchor()
+        assert(type(dialog.opts.anchor) == "function",
+            "the picker must anchor to the chip bar rather than centring")
+        local rect, prefers_pop_down = dialog.opts.anchor()
         eq(rect, { x = CHIP_RECT.x, y = CHIP_RECT.y, w = CHIP_RECT.w, h = CHIP_RECT.h })
         assert(prefers_pop_down == true,
             "must ask MovableContainer to open BELOW -- above the bar is the bar")
@@ -593,11 +638,7 @@ t.test("a colour nudge with no live chip bar falls back to a shelf rebuild", fun
         end
     end
     row.callback(makeTouchMenu())
-    local dialog
-    for _, c in ipairs(ui_calls) do
-        if c.op == "show" and c.w and c.w.buttons then dialog = c.w end
-    end
-    findButton(dialog, "+10").callback()
+    Settings._plugin.picker.apply("#808080")
     assert(bw.rebuild_count > 0,
         "with nothing to recolour in place, the shelf rebuild is the fallback")
 end)
@@ -698,7 +739,7 @@ t.test("Text size lists every scale key exactly once, on its own picker", functi
     eq(keys, {
         "Cover captions", "Cover badges", "Stack & folder labels",
         "Shelf menu", "List text",
-        "\xEE\x9E\xBD  Top panel", "\xEE\xB1\xAF  Micro-modules",
+        "\xEE\x9E\xBD  Top panel", "\xEE\xB1\xAF  Modules",
         "Start menu", "Modal tabs",
     })
 end)

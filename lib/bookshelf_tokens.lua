@@ -85,7 +85,7 @@ Tokens.CATALOGUE = {
     { category = "Book",     token = "%favourite",        description = _("Favorite icon, empty when not a favorite") },
     { category = "Book",     token = "%filename",         description = _("File name") },
     { category = "Book",     token = "%format",           description = _("Format (EPUB/PDF/…)") },
-    { category = "Book",     token = "%calibre{name}",     description = _("A calibre column by name, like %calibre{pubdate} or a custom column; dates show the year (needs the calibre beta)") },
+    { category = "Book",     token = "%calibre{name}",     description = _("A calibre column by name, like %calibre{pubdate} or a custom column; dates show the year (needs Read calibre metadata.calibre, except a book's pubdate in an OPDS catalog)") },
     { category = "Book",     token = "%size",             description = _("File size on disk") },
     { category = "Book",     token = "%added",            description = _("Date added (the file's own date)") },
     { category = "Book",     token = "%description",      description = _("Book blurb (HTML stripped)") },
@@ -147,7 +147,7 @@ Tokens.CATALOGUE = {
     { category = "Logic",    token = "[if:foo>50]…[/if]", description = _("Numeric comparison") },
     { category = "Logic",    token = "[if:foo]…[else]…[/if]", description = _("If/else") },
     { category = "Logic",    token = "[if:lang=ja][font=NAME]…[/font][else]…[/if]", description = _("Per-language font: e.g. a Japanese face for ja books, another otherwise") },
-    { category = "Logic",    token = "[if:full_width]…[/if]", description = _("Show … only in the full-width status line (micro-module + full-screen views), not the cover-view status") },
+    { category = "Logic",    token = "[if:full_width]…[/if]", description = _("Show … only in the full-width status line (module + full-screen views), not the cover-view status") },
     { category = "Logic",    token = "%spacer",           description = _("Elastic gap: pushes content left/right to the region edges") },
     { category = "Progress", token = "%bar",              description = _("Progress bar, filling the rest of the line") },
     { category = "Progress", token = "%bar{rel}",         description = _("Progress bar whose length reflects how long the book is") },
@@ -675,10 +675,12 @@ function Tokens.reviewsHtml(payload)
             out[#out + 1] = '<p class="stars">' .. Tokens.starString(rr) .. "</p>"
         end
         local byline = { "<b>Review by</b> <i>" .. _escHtml(name) .. "</i>" }
+        if review.spoiler then byline[#byline + 1] = "<b>Spoiler</b>" end
         local d = _formatReviewDate(review.reviewed_at)
         if d then byline[#byline + 1] = "<i>" .. _escHtml(d) .. "</i>" end
         if tonumber(review.likes_count) and tonumber(review.likes_count) > 0 then
-            byline[#byline + 1] = string.format("%d likes", tonumber(review.likes_count))
+            local n = tonumber(review.likes_count)
+            byline[#byline + 1] = (n == 1) and _("1 like") or string.format(_("%d likes"), n)
         end
         out[#out + 1] = '<p class="byline">' .. table.concat(byline, " \xC2\xB7 ") .. "</p>"
         local body = Tokens.sanitiseReviewHtml(review.text or "")
@@ -1258,7 +1260,7 @@ end
 -- "%calibre" in the preview. Field names match case-insensitively, with or
 -- without calibre's leading '#' (a custom column "#year" answers both
 -- %calibre{year} and %calibre{#Year}). Values come pre-rendered as strings
--- on book.calibre by the repository, only when the calibre beta is on.
+-- on book.calibre by the repository, only when Read calibre metadata.calibre is on.
 local function calibreField(book, field)
     local map = book and book.calibre
     if type(map) ~= "table" then return "" end

@@ -285,10 +285,14 @@ end
 -- exposes parallel *RGB32 variants that preserve true color; dispatch by
 -- type so the call sites stay shape-agnostic. (Same pattern bookends uses
 -- in bookends_overlay_widget.lua.)
+-- The RGB32 variants' corners need the invert flag off on Android: see
+-- Color.rawInvertBegin.
 local function _paintRoundedRect(bb, x, y, w, h, c, r)
     if not c then return end
     if ffi.istype(ColorRGB32_t, c) then
+        local raw = Color.rawInvertBegin(bb)
         bb:paintRoundedRectRGB32(x, y, w, h, c, r)
+        Color.rawInvertEnd(bb, raw)
     else
         bb:paintRoundedRect(x, y, w, h, c, r)
     end
@@ -298,7 +302,9 @@ M.paintRoundedRect = _paintRoundedRect
 local function _paintBorder(bb, x, y, w, h, bw, c, r)
     if not c then return end
     if ffi.istype(ColorRGB32_t, c) then
+        local raw = Color.rawInvertBegin(bb)
         bb:paintBorderRGB32(x, y, w, h, bw, c, r)
+        Color.rawInvertEnd(bb, raw)
     else
         bb:paintBorder(x, y, w, h, bw, c, r)
     end
@@ -936,6 +942,15 @@ function M.panelInk()
     local ok, colors = pcall(M.resolvedColors)
     if not (ok and colors and type(colors.panel_tint) ~= "nil") then return nil end
     return (require("lib/bookshelf_module_card").autoInk(colors.panel_tint))
+end
+
+-- panelColourSet() -> does the theme on screen give the panels a colour of
+-- their own (Colors > Panel color, or a pack's "panel")? Such a panel is
+-- drawn on a plain page too: its ink (panelInk) is chosen for it, and with
+-- no panel under it a pack's cream text sat on white paper (Autumn on a
+-- PW5, maintainer, 2026-10-28).
+function M.panelColourSet()
+    return type(_partRead("panel_color" .. _modeSuffix())) ~= "nil"
 end
 
 function M.resolvedColors()

@@ -260,6 +260,11 @@ local function registerSpec(spec, dir, fname, origin)
             .. " (in_place must be a boolean when present), skipping:", fname)
         return
     end
+    if spec.self_sized ~= nil and type(spec.self_sized) ~= "boolean" then
+        logger.warn("[bookshelf] micro-module spec invalid"
+            .. " (self_sized must be a boolean when present), skipping:", fname)
+        return
+    end
     -- Optional colour rows of its own (bookshelf_module_card): a list of
     -- { id, text, default, default_dark }, none taking a card key.
     if spec.colors ~= nil and not require("lib/bookshelf_module_card").validColors(spec.colors) then
@@ -437,9 +442,9 @@ local function trustedIndex()
     return _index
 end
 
-local function loadIndexed(key)
+local function loadIndexed(key, force)
     if scanned then return false end
-    if not inUse() then return false end
+    if not force and not inUse() then return false end
     local idx = trustedIndex()
     local e = idx and idx.keys[key]
     if type(e) ~= "table" then return false end
@@ -452,11 +457,35 @@ end
 -- Additive registration for callers that build specs in code (kept for
 -- API stability; file-based modules in micromodules/ are preferred).
 function M.register(key, def) registry[key] = def end
-function M.get(key)
+-- get(key, force): a module's spec, or nil. force: past the kill switch, for
+-- a lookup that is itself asking for the module (Kit.setOnHomeShelf, before
+-- any shelf holds it).
+function M.get(key, force)
     if registry[key] then return registry[key] end
-    if loadIndexed(key) then return registry[key] end
-    scan()
+    if loadIndexed(key, force) then return registry[key] end
+    scan(force)
     return registry[key]
+end
+
+-- pluginOf(dir) -> the live instance of the plugin a pack's module folder
+-- belongs to, or nil (a folder outside any plugin, a plugin that is not
+-- running). Kit.plugin is the documented name. KOReader files a plugin under
+-- its folder's name, not the name its main.lua gives, so the folder is what
+-- finds it; the path check keeps a same-named plugin elsewhere out. Paths
+-- compared with repeated slashes folded: KOReader's default extra folder is
+-- "<data>/plugins/", so its plugins' paths carry "//" and ours don't.
+function M.pluginOf(dir)
+    if type(dir) ~= "string" then return nil end
+    local root = dir:match("^(.-%.koplugin)/") or dir:match("^(.-%.koplugin)$")
+    local name = root and root:match("([^/]+)%.koplugin$")
+    if not name then return nil end
+    local ok, inst = pcall(function()
+        return require("pluginloader"):getPluginInstance(name)
+    end)
+    if not ok or type(inst) ~= "table" or type(inst.path) ~= "string" then return nil end
+    local function fold(p) return (p:gsub("/+", "/")) end
+    if fold(inst.path) ~= fold(root) then return nil end
+    return inst
 end
 
 -- notifyRemoved(entry): a card was removed. Its module's optional

@@ -109,22 +109,16 @@ t.test("a cover-shelf module is sized and framed like a cover", function()
 end)
 
 -- The editor's page buttons on a shelf: every shelf page is there to move
--- to, and the shelf follows the module to its new page; Shorter and Taller
--- are left out (one row tall), Narrower and Wider stay.
+-- to, and the shelf follows the module to its new page; Height is left out
+-- (one row tall), Width stays.
 t.test("the shelf editor moves modules page by page, and the shelf follows", function()
     local h = fn("_shelfModuleHost")
     assert(h and h:find("host.shelf = true", 1, true), "the editor is not told it is on a shelf")
     assert(h:find("function host.max_pages()", 1, true), "no shelf page count for the editor")
     assert(h:find("bw._cursor = (edit.page - 1) * bw:_viewSize() + 1", 1, true), "the shelf does not follow the editor's page")
     local ed = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    assert(ed:find('if on_shelf and axis == "h" then return nil end', 1, true), "Shorter/Taller shown on a shelf")
-    assert(not ed:find("if on_shelf and not can then return nil end", 1, true), "Narrower hidden at its limit")
+    assert(ed:find('if on_shelf and axis == "h" then return nil end', 1, true), "Height shown on a shelf")
     assert(ed:find("pageButton(Session.PAGE_PREV, -1)", 1, true) and ed:find("pageButton(Session.PAGE_NEXT, 1)", 1, true), "no page buttons")
-    -- On a shelf: Narrower over Wider, two rows of four.
-    local shelf_rows = ed:match("if on_shelf then(.-)\n        else")
-    assert(shelf_rows, "no shelf layout")
-    local r1 = shelf_rows:match("compact%((.-)compact%(")
-    assert(r1 and r1:find("Narrower", 1, true) and not r1:find("Wider", 1, true), "Narrower and Wider share a row")
 end)
 
 -- The layout editor fades everything but the modules it can move, so it is
@@ -199,6 +193,14 @@ t.test("the spine module menu is centred and clear of the module", function()
     assert(a:find("x = math.floor((Screen:getWidth() - cw) / 2)", 1, true), "not centred by its own x")
 end)
 
+-- A pinned piece's menu says what pinning did (maintainer: Pin here took
+-- you to a menu with no clear idea why).
+t.test("a pinned piece's menu says what pinning did, and Unpin undoes it", function()
+    local m = fn("_spineModuleMenu")
+    assert(m:find('_("Pinned to this spot: it stays here among the books', 1, true), "no word on what pinning did")
+    assert(m:find('pinned_piece and _("Unpin") or _("Remove")', 1, true), "no Unpin")
+end)
+
 -- The spine module menu stays open and updates in place (closing and
 -- reopening it per tap flashed the whole screen), takes swipes on the module,
 -- and the shelf's refresh after a change is the rows-only swap.
@@ -206,8 +208,11 @@ t.test("the spine module menu updates in place and takes swipes", function()
     local m = fn("_spineModuleMenu")
     assert(m, "no menu")
     assert(not m:find("bw:_spineModuleMenu(entry)", 1, true), "it still reopens itself")
-    assert(m:find("d:getButtonById(key)", 1, true) and m:find("btn:enable()", 1, true), "buttons not updated in place")
-    assert(m:find("d.ges_events.SwipeModule", 1, true) and m:find('ges.direction == "east"', 1, true), "no swipe on the module")
+    -- A page (STYLE.md), laid out again in place after a change.
+    assert(m:find('require("lib/bookshelf_page_dialog").show{', 1, true) and m:find("d:refresh()", 1, true),
+        "not updated in place")
+    assert(m:find("ev.ges == \"swipe\" and onSwipeModule(ev)", 1, true) and m:find('ges.direction == "east"', 1, true),
+        "no swipe on the module")
     local owner = fn("_shelfModuleOwner")
     local r = owner and owner:match("function owner.refresh%(%)(.-)\n    end")
     assert(r and r:find("bw:_swapShelvesInPlace()", 1, true), "no in-place swap")

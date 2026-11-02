@@ -37,7 +37,7 @@ local ViewMode = require("lib/bookshelf_view_mode")
 
 local src = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
 -- The three consecutive `local show_* = ...` lines, taken verbatim.
-local gates = src:match("(local pin = .-local show_spines = .-\n.-)\n%s*local bw")
+local gates = src:match("(local pin = .-local show_levels = [^\n]+)")
 assert(gates, "could not find the show_covers/show_list/show_spines block "
     .. "in Editor:_pickGroupDisplay - renamed or reordered?")
 
@@ -145,18 +145,18 @@ end)
 -- the choice to let the shelf pick between the two that follow it.
 
 t.test("order: Auto, then Covers before List, then Spines", function()
-    local block = src:match('header%(_%("Show as"%)%)(.-)%-%- Which density rows')
-    assert(block, "could not find the Show as radio block")
+    local block = src:match('local show_items = {}(.-)local active =')
+    assert(block, "could not find the Show as items")
     local seen = {}
-    for label in block:gmatch('radio%(_%("(%a+)"%)') do
+    for label in block:gmatch('label = _%("(%a+)"%)') do
         seen[#seen + 1] = label
     end
     local want = { "Auto", "Covers", "List", "Spines" }
-    assert(#seen == #want, "expected " .. #want .. " radios, found " .. #seen
+    assert(#seen == #want, "expected " .. #want .. " options, found " .. #seen
         .. " (" .. table.concat(seen, ", ") .. ")")
     for i = 1, #want do
         assert(seen[i] == want[i], string.format(
-            "radio %d should be %s, is %s (row reads: %s)",
+            "option %d should be %s, is %s (row reads: %s)",
             i, want[i], seen[i], table.concat(seen, ", ")))
     end
 end)

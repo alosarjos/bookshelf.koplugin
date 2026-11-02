@@ -245,8 +245,8 @@ t.test("a sub-shelf's run badge opens it; the editor can hide the + tile", funct
     assert(sp:find("local tail = math.max(0, surf - inset)", 1, true), "the + tile stands on the plank")
     local ed = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
     local toggle = ed:match('draft%.hide_add_tile = %(not draft%.hide_add_tile%) or nil\n%s*commit%(%)')
-    assert(ed:find('_("Show + Add shelf")', 1, true) and toggle,
-        "no live Show + Add shelf toggle")
+    assert(ed:find('_("Add shelf tile: %1")', 1, true) and toggle,
+        "no live Add shelf tile toggle")
 end)
 
 t.test("the fetch, the tap and the long-press know a sub-shelf tile", function()
@@ -272,9 +272,12 @@ t.test("the editor deletes a shelf's whole tree and moves among siblings", funct
     local ed = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
     assert(ed:find("TabModel.removeTree(del_tabs, tab_id)", 1, true),
         "delete leaves a shelf of shelves' shelves behind")
-    local _, n = ed:gsub("TabModel%.isSibling%(", "")
-    assert(n >= 2, "the move arrows and their enabled state do not both walk siblings")
-    assert(ed:find('btn("shelves", _("Shelf of shelves"))', 1, true), "no Shelf of shelves source")
+    -- Shelf order lists and moves a shelf among its siblings (TabModel,
+    -- tests/_test_shelf_order.lua).
+    assert(ed:find("TabModel.orderSiblings(", 1, true) and ed:find("TabModel.moveAmong(", 1, true),
+        "Shelf order does not walk siblings")
+    assert(ed:find('_("Shelf of shelves"),', 1, true) and ed:find('set_simple("shelves")', 1, true),
+        "no Shelf of shelves source")
 end)
 
 t.test("go home climbs out of a shelf of shelves on both paths", function()

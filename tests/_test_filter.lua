@@ -138,7 +138,7 @@ test("matches: multiple collections union (OR)", function()
 end)
 
 test("dimSummary per dimension", function()
-    eq("any", Filter.dimSummary({}, "genres"), "any")
+    eq("any", Filter.dimSummary({}, "genres"), "Any")
     eq("one", Filter.dimSummary({ genres = { ["Sci-Fi"] = true } }, "genres"), "Sci-Fi")
     -- multi values now list comma-separated, sorted
     local two = Filter.dimSummary({ langs = { en = true, fr = true } }, "langs")
@@ -170,11 +170,11 @@ end)
 test("dimSummary folders in/out", function()
     local f = { folders = { include = { ["/a"] = true }, exclude = { ["/b"] = true, ["/c"] = true } } }
     eq("folders", Filter.dimSummary(f, "folders"), "1 in, 2 out")
-    eq("folders none", Filter.dimSummary({}, "folders"), "any")
+    eq("folders none", Filter.dimSummary({}, "folders"), "Any")
 end)
 
 test("summary counts active dimensions", function()
-    eq("none", Filter.summary({}), "none")
+    eq("none", Filter.summary({}), "None")
     eq("one", Filter.summary({ statuses = { unread = true } }), "1 active")
     eq("two", Filter.summary({ statuses = { unread = true }, langs = { en = true } }), "2 active")
 end)
@@ -253,7 +253,7 @@ test("dimSummary ratings: single selection shows friendly label", function()
     local sm = Filter.dimSummary({ ratings = { ["5"] = true, ["4"] = true } }, "ratings")
     eq("multi comma list", sm, "4 stars, 5 stars")
     local sa = Filter.dimSummary({}, "ratings")
-    eq("any when empty", sa, "any")
+    eq("any when empty", sa, "Any")
 end)
 
 test("isActive true when ratings set", function()
@@ -319,13 +319,90 @@ test("signature includes series membership", function()
 end)
 
 test("dimSummary: series membership", function()
-    eq("absent -> any", Filter.dimSummary({}, "series_membership"), "any")
+    eq("absent -> any", Filter.dimSummary({}, "series_membership"), "Any")
     -- An explicit "both" persists and shows its own label since #160 (the
     -- Series source reads it to mix standalone books in with the stacks).
     eq("both -> its label", Filter.dimSummary({ series_membership = "both" }, "series_membership"),
         "Standalone and books in series")
     eq("standalone label", Filter.dimSummary({ series_membership = "standalone" }, "series_membership"),
         "Only standalone books")
+end)
+
+
+-- Genre: "all of these" and "leave out these" beside "any of these" (GitHub
+-- issue 293: Romantasy = Romance AND Fantasy; 453: everything but FanFiction).
+-- Collection: "leave out these".
+local function genreBook(...) return { genres = { ... } } end
+
+test("matches: genres_all needs every one", function()
+    local c = Filter.compile({ genres_all = { Romance = true, Fantasy = true } })
+    eq("both", Filter.matches(genreBook("Fantasy", "Romance", "Magic"), c), true)
+    eq("one", Filter.matches(genreBook("Fantasy"), c), false)
+    eq("none", Filter.matches({}, c), false)
+end)
+
+test("matches: genres_not leaves out any book with one", function()
+    local c = Filter.compile({ genres_not = { FanFiction = true } })
+    eq("fanfic", Filter.matches(genreBook("Romance", "FanFiction"), c), false)
+    eq("book", Filter.matches(genreBook("Romance"), c), true)
+    eq("no genres", Filter.matches({}, c), true)
+end)
+
+test("matches: any, all and not together", function()
+    local c = Filter.compile({ genres = { Crime = true, Mystery = true },
+        genres_all = { ["Non-Fiction"] = true }, genres_not = { Fiction = true } })
+    eq("true crime", Filter.matches(genreBook("Non-Fiction", "Crime"), c), true)
+    eq("no any", Filter.matches(genreBook("Non-Fiction", "History"), c), false)
+    eq("no all", Filter.matches(genreBook("Crime"), c), false)
+    eq("left out", Filter.matches(genreBook("Non-Fiction", "Crime", "Fiction"), c), false)
+end)
+
+test("matches: genre_normalize applies to all and not", function()
+    local norm = function(v) return v:lower() end
+    local c = Filter.compile({ genres_all = { Fantasy = true }, genres_not = { FanFiction = true } },
+        { genre_normalize = norm })
+    eq("kept", Filter.matches(genreBook("fantasy"), c), true)
+    eq("left out", Filter.matches(genreBook("fantasy", "fanfiction"), c), false)
+end)
+
+test("matches: collections_not leaves out their books", function()
+    local resolver = function(name)
+        if name == "DNF" then return { ["/b/x.epub"] = true } end
+        return {}
+    end
+    local c = Filter.compile({ collections_not = { DNF = true } }, { collection_resolver = resolver })
+    eq("in DNF", Filter.matches({ filepath = "/b/x.epub" }, c), false)
+    eq("other", Filter.matches({ filepath = "/b/y.epub" }, c), true)
+end)
+
+test("the new sets make a filter active and change its signature", function()
+    eq("all", Filter.isActive({ genres_all = { A = true } }), true)
+    eq("not", Filter.isActive({ genres_not = { A = true } }), true)
+    eq("coll not", Filter.isActive({ collections_not = { A = true } }), true)
+    local any = Filter.signature({ genres = { A = true } })
+    eq("all sig", Filter.signature({ genres_all = { A = true } }) ~= any, true)
+    eq("not sig", Filter.signature({ genres_not = { A = true } }) ~= any, true)
+end)
+
+test("a genre or collection filter's sets all belong to it", function()
+    local keys = table.concat(Filter.dimKeys("genres"), ",")
+    eq("genres", keys, "genres,genres_all,genres_not")
+    eq("collections", table.concat(Filter.dimKeys("collections"), ","), "collections,collections_not")
+    eq("langs", table.concat(Filter.dimKeys("langs"), ","), "langs")
+    eq("one dimension", Filter.summary({ genres = { A = true }, genres_not = { B = true } }), "1 active")
+end)
+
+test("dimSummary says how each genre set counts", function()
+    eq("any only", Filter.dimSummary({ genres = { B = true, A = true } }, "genres"), "A, B")
+    eq("all", Filter.dimSummary({ genres_all = { Romance = true, Fantasy = true } }, "genres"),
+        "Fantasy + Romance")
+    eq("not", Filter.dimSummary({ genres_not = { FanFiction = true } }, "genres"), "not FanFiction")
+    eq("all three", Filter.dimSummary({ genres = { Crime = true }, genres_all = { NF = true },
+        genres_not = { Fiction = true, Novel = true } }, "genres"),
+        "Crime; all of NF; not Fiction, Novel")
+    eq("all and not", Filter.dimSummary({ genres_all = { Romance = true, Fantasy = true },
+        genres_not = { FanFiction = true } }, "genres"), "Fantasy + Romance; not FanFiction")
+    eq("coll not", Filter.dimSummary({ collections_not = { DNF = true } }, "collections"), "not DNF")
 end)
 
 io.write(("filter: %d passed, %d failed\n"):format(pass, fail))

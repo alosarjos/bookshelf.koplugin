@@ -333,9 +333,11 @@ t.test("the default's picker: titled Default theme, opens on page 1 always, Add 
     -- read as the in-use mark (review, 2026-10-09).
     eq(m._dpad_idx, nil, "the keys' focus ring shows before any key is pressed")
     eq(c.focus_on_key(), 5, "the first key press does not look for the choice in use")
-    local f = c.footer_rows[1]
-    -- Reset between them (maintainer, 2026-10-09).
-    eq(#f, 3); eq(f[1].label, "Add theme pack\xE2\x80\xA6"); eq(f[2].label, "Reset"); eq(f[3].label, "Close")
+    -- Add theme pack, then Reset (maintainer, 2026-10-09), on the strip
+    -- under the title; Close in the footer.
+    local f = c.header_actions
+    eq(#f, 2); eq(f[1].label, "Add theme pack\xE2\x80\xA6"); eq(f[2].label, "Reset edited theme"); eq(f[1].at_left, true)
+    eq(#c.footer_rows[1], 1); eq(c.footer_rows[1][1].label, "Close")
     f[1].on_tap(); eq(TP.add_info, 1)
     eq(shown[1], m)
     library = "plain"
@@ -354,7 +356,7 @@ t.test("four cards a page, the picker no taller than they need, the cards as tal
     eq(c.area_height(1000), 4 * 185 + 3 * 10, "the cards' area is not four cards and their gaps")
     eq(c.anchor, nil, "the picker is not centred")
     local lm = io.open("lib/bookshelf_library_modal.lua"):read("*a")
-    assert(lm:find("if self.config.area_height then area_height = self.config.area_height(cw) end", 1, true),
+    assert(lm:find("local r = room()", 1, true) and lm:find("area_height = self.config.area_height(cw, r)", 1, true),
         "the modal ignores the caller's area height")
 end)
 
@@ -373,11 +375,19 @@ t.test("a tap chooses and moves the mark, then the shelf behind is rebuilt; the 
     eq(tasks[1] and tasks[1].secs, TL.APPLY_DELAY, "the shelf behind is not rebuilt after a tap")
     runTasks()
     eq(table.concat(built, ","), "Macabre", "the shelf behind did not follow the choice while the picker is open")
-    eq(dirty[#dirty], "all:full", "a theme is the whole look: one full refresh, the picker repainted over it")
+    -- No full refresh of its own while the picker is up: it flashed the
+    -- picker after the card's outline (maintainer: one paint per tap). The
+    -- shelf's rebuild refreshes as ui (TL.previewing); nor as the picker
+    -- closes (maintainer: the shelf behind already shows the theme).
+    for _i, d in ipairs(dirty) do assert(d ~= "all:full", "a theme tap flashed the whole screen") end
+    eq(TL.previewing, true, "the shelf does not know the previews are the picker's")
     eq(m.closed, nil, "the picker closed on a choice")
     c.on_cell_tap(c.item_at(3))
     eq(#chosen, 1, "choosing the theme in use again did something")
     eq(runTasks(), 0, "choosing the theme in use again rebuilt the shelf")
+    c.on_closed()
+    for _i, d in ipairs(dirty) do assert(d ~= "all:full", "the picker flashed the screen as it closed") end
+    eq(TL.previewing, false)
 end)
 
 t.test("a run of taps is one rebuild, for the last choice", function()
@@ -392,7 +402,11 @@ t.test("a run of taps is one rebuild, for the last choice", function()
     eq(table.concat(built, ","), "plain", "not one rebuild for the last choice")
     local full = 0
     for _i, d in ipairs(dirty) do if d == "all:full" then full = full + 1 end end
-    eq(full, 1, "more than one full refresh for a run of taps")
+    eq(full, 0, "a full refresh while the picker is up")
+    c.on_closed()
+    full = 0
+    for _i, d in ipairs(dirty) do if d == "all:full" then full = full + 1 end end
+    eq(full, 0, "a full refresh as the picker closed")
 end)
 
 t.test("a choice still waiting is applied when the picker closes, before the caller comes back", function()
@@ -403,7 +417,7 @@ t.test("a choice still waiting is applied when the picker closes, before the cal
                        apply = function() order[#order + 1] = "apply:" .. tostring(library) end,
                        on_closed = function() order[#order + 1] = "back" end }
     c.on_cell_tap(c.item_at(3))
-    c.footer_rows[1][3].on_tap()
+    c.footer_rows[1][1].on_tap()
     eq(m.closed, true)
     eq(table.concat(order, ","), "apply:Macabre,back", "the menu came back before the shelf followed the choice")
     eq(runTasks(), 0, "a rebuild was left waiting after the picker closed")
@@ -475,7 +489,7 @@ t.test("a shelf's picker is titled for it, and Close brings the caller back once
                        on_closed = function() back = back + 1 end }
     eq(c.title, "Theme: Home")
     eq(c.item_at(1).same, true)
-    c.footer_rows[1][3].on_tap()
+    c.footer_rows[1][1].on_tap()
     eq(m.closed, true); eq(back, 1)
 end)
 
@@ -576,14 +590,16 @@ t.test("the ornaments are scanned once per open, not per card, page or tap", fun
     TP.choiceList, TL._renderCard = list0, render0
 end)
 
-t.test("the choice in use is a heavier frame on a light ground, not a radio mark", function()
+t.test("the choice in use is a heavier frame, not a radio mark", function()
     -- Maintainer, 2026-10-07: the radio mark did not look good on a card.
     local src = io.open("lib/bookshelf_theme_library.lua"):read("*a")
     local card = src:match("function TL%._renderCard%(.-\nend\n")
     assert(card, "_renderCard moved")
     assert(not card:find("Marks.Radio", 1, true), "the radio mark is back")
-    assert(card:find("current and Size.border.thick or Size.border.thin", 1, true), "no heavier frame for the choice in use")
-    assert(card:find("current and Blitbuffer.Color8(0xEE)", 1, true), "no light ground for the choice in use")
+    -- Every card is the popup kit's grey card (STYLE.md); the one in use
+    -- has the kit's heavy outline.
+    assert(card:find(".cardify(FrameContainer:new{", 1, true), "not the kit's card")
+    assert(card:find("}, { outline = current })", 1, true), "no heavier frame for the choice in use")
 end)
 
 t.test("the footer's Reset: the marked theme, greyed unless an edited pack or Plain, asked first", function()
@@ -597,7 +613,7 @@ t.test("the footer's Reset: the marked theme, greyed unless an edited pack or Pl
     local built = 0
     local m, c = open{ current = function() return library end, choose = function(v) library = v end,
                        apply = function() built = built + 1 end }
-    local reset = c.footer_rows[1][2]
+    local reset = c.header_actions[2]
     eq(reset.key, "reset")
     -- As original: greyed, and a tap (keys can still reach it) does nothing.
     eq(reset.enabled_when(), false, "Reset is not greyed on a theme as original")
@@ -618,10 +634,11 @@ t.test("the footer's Reset: the marked theme, greyed unless an edited pack or Pl
     eq(full, 0, "a full refresh before the shelf behind was rebuilt (a second flash)")
     runTasks()
     eq(built, 1, "the shelf behind showing that theme did not follow")
-    eq(dirty[#dirty], "all:full", "no full refresh for the whole look changing")
+    c.on_closed()
+    for _i, d in ipairs(dirty) do assert(d ~= "all:full", "the picker flashed the screen as it closed") end
     full = 0
     for _i, d in ipairs(dirty) do if d == "all:full" then full = full + 1 end end
-    eq(full, 1, "more than one full refresh for a reset")
+    eq(full, 0, "a full refresh for a reset")
     -- Plain, edited, marked: Reset. The shelf behind on another theme: left
     -- alone.
     library = "plain"; edits.plain = { keys = {} }; on_screen = "Ukiyo"
@@ -635,11 +652,11 @@ t.test("the footer's Reset: the marked theme, greyed unless an edited pack or Pl
     library = "mine"
     eq(reset.enabled_when(), false, "Custom theme offered a reset")
     local _m2, c2 = open{ shelf = "Home", current = function() return nil end, choose = function() end }
-    eq(c2.footer_rows[1][2].enabled_when(), false, "the Default theme card offered a reset")
-    c2.footer_rows[1][2].on_tap(); eq(#asked, 2, "a greyed Reset asked")
+    eq(c2.header_actions[2].enabled_when(), false, "the Default theme card offered a reset")
+    c2.header_actions[2].on_tap(); eq(#asked, 2, "a greyed Reset asked")
     -- A shelf's picker, its own pack marked and edited: Reset.
     local _m3, c3 = open{ shelf = "Home", current = function() return "Macabre" end, choose = function() end }
-    eq(c3.footer_rows[1][2].enabled_when(), true)
+    eq(c3.header_actions[2].enabled_when(), true)
     edits.mine, edits.Macabre = nil, nil
     TP.confirmReset, TP.shelfTheme = nil, nil
 end)
@@ -648,23 +665,31 @@ t.test("LibraryModal greys a footer button whose enabled_when says so, and a pre
     -- The keys' focus can rest on it (the footer is a row of Buttons), but
     -- its callback runs only while enabled.
     local lm = io.open("lib/bookshelf_library_modal.lua"):read("*a")
-    assert(lm:find("if action.enabled_when then enabled = action.enabled_when() end", 1, true),
+    assert(lm:find("if a.enabled_when then enabled = a.enabled_when() end", 1, true),
         "the footer ignores enabled_when")
-    assert(lm:find("callback = function() if enabled then action.on_tap() end end,", 1, true)
-        and lm:find("enabled = enabled,", 1, true), "a greyed footer button still acts")
+    -- The row is the kit's (Kit.footerRow): greyed, and its callback held back.
+    local kit = io.open("lib/bookshelf_popup_kit.lua"):read("*a")
+    local fr = kit:match("\n(function Kit%.footerRow%(.-\nend)\n")
+    assert(fr and fr:find("callback = function() if enabled then a.callback() end end,", 1, true)
+        and fr:find("enabled = enabled,", 1, true), "a greyed footer button still acts")
     local tl = io.open("lib/bookshelf_theme_library.lua"):read("*a")
     assert(tl:find('{ key = "add", label = tp.addThemeLabel()', 1, true)
-        < tl:find('{ key = "reset", label = _("Reset"),', 1, true)
-        and tl:find('{ key = "reset", label = _("Reset"),', 1, true) < tl:find('{ key = "close", label = _("Close")', 1, true),
+        < tl:find('{ key = "reset", label = _("Reset edited theme"),', 1, true)
+        and tl:find('{ key = "reset", label = _("Reset edited theme"),', 1, true) < tl:find('{ key = "close", label = _("Close")', 1, true),
         "Reset is not between Add theme pack and Close")
+    -- Header buttons grey the same way.
+    assert(lm:find("into[#into + 1] = PopupKit.headerButton{ text = a.label, icon = a.icon,\n            font_size = 16, enabled = enabled,", 1, true),
+        "a header button ignores enabled_when")
 end)
 
-t.test("a long-press on a pack's or Plain's card offers Reset to original, greyed unless it is edited", function()
-    -- Maintainer, 2026-10-09, as a long-press on a Bookends preset opens its
-    -- Manage dialog: Reset on the card, asked first (TP.confirmReset, the
-    -- Theme menu's question); the card loses Edited, and the shelf behind
-    -- follows when it shows that theme.
-    package.loaded["ui/widget/buttondialog"] = { new = function(_c, o) o.config = {}; o.dialog = true; return o end }
+t.test("a long-press on an edited pack's or Plain's card asks to reset it; unedited says so", function()
+    -- Maintainer, 2026-10-09: Reset on the card, asked first (TP.confirmReset,
+    -- the Theme menu's question, which names the theme); the card loses
+    -- Edited, and the shelf behind follows when it shows that theme. No
+    -- dialog of one (greyed) button in between: the question is the dialog,
+    -- and a theme as it came gets a note, not a greyed button (STYLE.md).
+    package.loaded["ui/widget/buttondialog"] = { new = function() error("a one-button dialog") end }
+    package.loaded["ui/widget/notification"] = { new = function(_c, o) o.note = true; return o end }
     local asked = {}
     TP.confirmReset = function(th, after) asked[#asked + 1] = { theme = th, after = after } end
     local on_screen = "Macabre"
@@ -679,49 +704,44 @@ t.test("a long-press on a pack's or Plain's card offers Reset to original, greye
     local mac = c.item_at(3)
     eq(mac.title, "Macabre")
     c.cell_long_tap(mac)
-    local d = shown[#shown]
-    assert(d and d.dialog, "the long-press showed no dialog")
-    eq(d.title, "Macabre", "the dialog does not say which theme")
-    local b = d.buttons[1][1]
-    eq(#d.buttons, 1); eq(b.text, "Reset to original")
-    eq(b.enabled, true, "Reset is greyed on an edited theme")
-    b.callback()
-    eq(d.closed, true, "the dialog stayed over the question")
-    eq(asked[1] and asked[1].theme, "Macabre", "Reset did not ask about that card's theme")
+    eq(asked[1] and asked[1].theme, "Macabre", "the long-press did not ask about that card's theme")
     edits.Macabre = nil                                -- what confirmReset's OK does
     asked[1].after()
     eq(c.item_at(3).summary:find("Edited", 1, true), nil, "the card still says Edited")
     eq(m.refreshes, 1, "the cards were not redrawn")
     runTasks()
     eq(built, 1, "the shelf behind showing that theme did not follow")
-    eq(dirty[#dirty], "all:full")
-    -- Unedited: greyed. Plain: the same dialog. The shelf behind on another
-    -- theme: left alone.
+    -- Unedited: a note, no question. Plain edited: asked. The shelf behind
+    -- on another theme: left alone.
+    local n = #asked
     c.cell_long_tap(c.item_at(3))
-    eq(shown[#shown].buttons[1][1].enabled, false, "Reset is not greyed on a theme as original")
+    eq(#asked, n, "asked to reset a theme as it came")
+    assert(shown[#shown].note and shown[#shown].text:find("Macabre", 1, true), "no note naming the theme")
     edits.plain = { keys = {} }
     on_screen = "Ukiyo"
     c.cell_long_tap(c.item_at(2))
-    eq(shown[#shown].title, "Plain"); eq(shown[#shown].buttons[1][1].enabled, true)
-    shown[#shown].buttons[1][1].callback()
+    eq(asked[#asked].theme, "plain")
     edits.plain = nil
     asked[#asked].after()
     eq(runTasks(), 0, "the shelf behind was rebuilt for a theme it does not show")
     -- Custom theme (no original), Default theme (it stands for another card)
     -- and a missing pack: nothing.
-    local n = #shown
+    n = #shown
+    local na = #asked
     eq(c.item_at(1).value, "mine")
     c.cell_long_tap(c.item_at(1))
-    eq(#shown, n, "Custom theme's card showed a dialog")
+    eq(#shown, n, "Custom theme's card showed something")
     local _m2, c2 = open{ shelf = "Home", current = function() return nil end, choose = function() end }
     n = #shown
     eq(c2.item_at(1).same, true)
     c2.cell_long_tap(c2.item_at(1))
     eq(TL.showReset({ value = "Gone", missing = true, title = "Gone (missing)" }), nil)
-    eq(#shown, n, "a card with nothing to reset showed a dialog")
+    eq(#shown, n, "a card with nothing to reset showed something")
     eq(TL.showReset({ value = "mine", title = "Custom theme" }), nil, "Custom theme offered a reset")
+    eq(#asked, na)
     TP.confirmReset, TP.shelfTheme = nil, nil
     package.loaded["ui/widget/buttondialog"] = nil
+    package.loaded["ui/widget/notification"] = nil
 end)
 
 t.done()

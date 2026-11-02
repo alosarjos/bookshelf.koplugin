@@ -19,7 +19,8 @@ local chunk_src = src:sub(from, to) .. "\nreturn _renderFitted\n"
 
 local store = {}
 local function load_fit()
-    local HM = { _hostOf = function() return nil end, bookHelpers = function(c) return c end }
+    local HM = { _hostOf = function() return nil end, bookHelpers = function(c) return c end,
+                 _shelfView = function() return nil end }
     local env = setmetatable({
         HeroModules = HM,
         BookshelfSettings = {
@@ -166,6 +167,42 @@ t.test("a small change takes fewer renders than a full search", function()
     fit(def, 300, 120, 100, nil, entry, 100, nil)
     assert(def.renders < full_renders, string.format("took %d renders, a full search %d",
         def.renders, full_renders))
+end)
+
+-- A module that sizes itself (pixel art, an image, a widget built for
+-- another host) draws the same whatever scale it is handed. The search would
+-- render it again and again for nothing; self_sized asks for one render at
+-- the cell's size.
+local function fixed(h)
+    local def = { key = "fixed", renders = 0, self_sized = true }
+    def.render = function(ctx)
+        def.renders = def.renders + 1
+        def.last = ctx
+        return { getSize = function() return { w = ctx.width, h = h } end }
+    end
+    return def
+end
+
+t.test("a self-sized module renders once, at the cell's size and scale 100", function()
+    for k in pairs(store) do store[k] = nil end
+    local fit = load_fit()
+    for _, h in ipairs({ 40, 100, 160 }) do   -- short, exact, too tall
+        local def = fixed(h)
+        local w = fit(def, 200, 100, 100, nil, { id = "self" .. h }, 100, nil)
+        assert(def.renders == 1, string.format("h=%d rendered %d times", h, def.renders))
+        assert(w:getSize().h == h, "the module's own render was not returned")
+        assert(def.last.width == 200 and def.last.height == 100, "not handed the cell")
+        assert(def.last.scale == 100 and not def.last.clamp, "handed a fitted scale or a clamp")
+    end
+    assert(store.module_fit_memo == nil, "a self-sized module was put in the fit memo")
+end)
+
+t.test("a self-sized module ignores the module text size", function()
+    local fit = load_fit()
+    local def = fixed(60)
+    fit(def, 200, 100, 100, nil, { id = "selfmult" }, 150, nil)
+    assert(def.renders == 1 and def.last.scale == 100, string.format(
+        "rendered %d times, last at %s", def.renders, tostring(def.last.scale)))
 end)
 
 t.done()

@@ -36,11 +36,12 @@ end)
 
 t.test("off, nothing offers to put a module on the shelf", function()
     local orn = io.open("lib/bookshelf_ornament_menu.lua"):read("*a")
-    local i = orn:find('_("Pin here")', 1, true)
-    assert(i and orn:sub(i - 300, i):find("microOnShelf", 1, true), "Pin here is offered with On the shelf off")
+    local i = orn:find('_("Pin to a spot")', 1, true)
+    assert(i and orn:sub(i - 400, i):find("microOnShelf", 1, true), "Pin to a spot is offered with On the shelf off")
     local ce = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
-    local j = ce:find("Add a module to this shelf", 1, true)
-    assert(j and ce:sub(j - 400, j):find("microOnShelf", 1, true), "Add a module is offered with On the shelf off")
+    -- The Modules card stays, greyed, saying why (maintainer, 2026-10-31).
+    local j = ce:find('why = _("Off in Settings")', 1, true)
+    assert(j and ce:sub(j - 200, j):find("microOnShelf", 1, true), "Add a module is offered with On the shelf off")
 end)
 
 t.test("the Micro modules menu has an On the shelf row", function()

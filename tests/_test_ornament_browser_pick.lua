@@ -13,7 +13,8 @@ t.test("the browser has a pick mode", function()
     assert(b:find('sw.setPackOff(item.entry.pack, false)', 1, true), "a picked piece's off pack stays off")
     assert(b:find("self.opts.pick(item.entry)", 1, true))
     assert(b:find("self._close()", 1, true), "picking does not close the browser")
-    assert(src:find('self.opts.pick and _("Cancel") or _("Apply")', 1, true), "the pick footer still says Apply")
+    -- Close, which the modal turns into the title's X; Cancel when picking.
+    assert(src:find('self.opts.pick and _("Cancel") or _("Close")', 1, true), "the footer is not Close (or Cancel when picking)")
 end)
 
 t.test("the browser's title is the collection, as its settings row", function()
@@ -36,6 +37,7 @@ t.test("a pack with no ornaments (planks only) gets no chip", function()
                    { "Autumn", "Planks" }
         end,
         isPackOff = function() return false end,
+        allowRecent = function() return false end,
     }
     local chips = load("return function(self)\n" .. method(src, "Browser:_chips()") .. "\nend", "c", "t",
         { O = function() return Orn end, SW = function() return Orn end, _ = function(x) return x end,
@@ -86,6 +88,7 @@ t.test("Swap lists only the pieces the shelf deals from", function()
         end,
         isOff = function() return false end,
         isPackOff = function() return false end,
+        allowRecent = function() return false end,
     }
     local items = load("return function(self)\n" .. method(src, "Browser:_items()") .. "\nend", "i", "t",
         { O = function() return Orn end, SW = function() return Orn end, ALL = "\0all", ipairs = ipairs })()
@@ -98,10 +101,15 @@ t.test("Swap lists only the pieces the shelf deals from", function()
     H.eq(names({ pool = function(e) return e.pack == nil or e.pack == "H" end }), "H/bat.png,pot.svg")
 end)
 
-t.test("the long-press menu's Swap hands the browser the shelf's pool", function()
+-- Maintainer: Swap offering only the shelf's own pack was unexpected; any
+-- piece can be picked, and the pick switches it on for the shelf.
+t.test("the long-press menu's Swap offers every piece", function()
     local m = io.open("lib/bookshelf_ornament_menu.lua"):read("*a")
-    assert(m:find("ornamentsFor(shelf)", 1, true) and m:find("pool = ", 1, true),
-        "Swap offers pieces this shelf never deals")
+    local i = m:find('barButton(_("Swap")', 1, true)
+    assert(i, "no Swap")
+    local call = m:sub(i, (m:find("Deck.swap(", i, true)))
+    assert(call:find("pick = function(chosen)", 1, true), "Swap does not open the browser to pick")
+    assert(not call:find("pool", 1, true), "Swap limits the browser to the shelf's pieces")
 end)
 
 t.test("opening shows a message at once and builds the browser after it", function()
@@ -115,6 +123,69 @@ t.test("opening shows a message at once and builds the browser after it", functi
     local build = show:find("Browser._open", 1, true)
     assert(msg and paint and later and build, "no loading message before the build")
     assert(msg < paint and paint < later and later < build, "the message must paint before the build starts")
+end)
+
+-- PW5, 2026-10-30, 443 pieces: opening the browser took 32 s. Each piece's
+-- isOff asks for the theme's set, which reached listAll, and outside the
+-- recent window listAll reads every folder again (~36 ms on the PW5): 889
+-- scans. The list takes one fresh look and holds the window for the rest.
+t.test("listing the pieces reads the folders once, however many there are", function()
+    local open, fresh = false, 0
+    local all = {}
+    for i = 1, 50 do all[i] = { name = "P/" .. i .. ".png", pack = "P" } end
+    local Orn = {
+        listAll = function() if not open then fresh = fresh + 1 end; return all, { "P" } end,
+        allowRecent = function(on) local was = open; open = on and true or false; return was end,
+    }
+    local sw = {
+        isOff = function() Orn.listAll(); return false end,
+        isPackOff = function() Orn.listAll(); return false end,
+    }
+    local env = { O = function() return Orn end, SW = function() return sw end, ALL = "\0all",
+        ipairs = ipairs, pairs = pairs, _ = function(x) return x end, T = function(x) return x end }
+    local items = load("return function(self)\n" .. method(src, "Browser:_items()") .. "\nend", "i", "t", env)()
+    H.eq(#items({ chip = "\0all", opts = {} }), 50)
+    H.eq(fresh, 1, "the folders were read per piece")
+    H.eq(open, false, "the window was left open")
+    fresh = 0
+    local chips = load("return function(self)\n" .. method(src, "Browser:_chips()") .. "\nend", "c", "t", env)()
+    chips({ chip = "\0all" })
+    H.eq(fresh, 1, "the chips read the folders per pack")
+    H.eq(open, false)
+end)
+
+-- Maintainer: every piece looked greyed out, with no word on what the boxes
+-- were for. The ticks are the set of the shelf's theme (Plain's was empty).
+t.test("the browser says whose set the ticks are, and only a pack that is off fades", function()
+    local cell = method(src, "Browser._renderCell(item, dimen)")
+    assert(cell:find("if item.pack_off and not item.pick then preview = Faded:new", 1, true),
+        "a piece that is only off still fades")
+    assert(cell:find("if item.pick then return card end", 1, true), "Swap still shows the boxes")
+    assert(src:find("intro = function() return self:_intro() end,\n        intro_below = true,", 1, true),
+        "no line under the grid saying whose set it is")
+    local m = io.open("lib/bookshelf_library_modal.lua"):read("*a")
+    local grid = m:find("table.insert(body, padded(result_area))", 1, true)
+    local below = m:find("if has_intro and self.config.intro_below then", 1, true)
+    assert(grid and below and below > grid, "intro_below does not put the line under the grid")
+    local intro = method(src, "Browser:_intro()")
+    assert(intro:find("self.opts.pick", 1, true), "Swap gets the switches' line")
+    -- The words, through a stub.
+    local env = { _ = function(x) return x end,
+        T = function(f, ...) local a = { ... }; return (f:gsub("%%(%d)", function(n) return tostring(a[tonumber(n)]) end)) end,
+        TP = function() return { themeName = function() return "Plain" end, shelfTheme = function() return "plain" end } end }
+    local f = load("return function(self)\n" .. intro .. "\nend", "n", "t", env)()
+    H.eq(f({ opts = {}, on_count = 0, all_count = 443 }), "On Plain shelves: none yet. Check a piece to add it.")
+    H.eq(f({ opts = {}, on_count = 12, all_count = 443 }),
+        "On Plain shelves: 12 of 443. Check a piece to add it, uncheck to take it off.")
+    H.eq(f({ opts = { pick = true }, on_count = 0, all_count = 443 }), nil)
+end)
+
+-- Perf review 2026-10-31: a tick read every ornament folder twice (the list,
+-- then the chips, each outside the recent window).
+t.test("a tick reads the folders as they were, not afresh", function()
+    local ch = method(src, "Browser:_changed(rescan)")
+    assert(ch:find("local was = (not rescan) and Orn.allowRecent(true)", 1, true), "a tick rescans the folders")
+    assert(ch:find("if not rescan and not was then Orn.allowRecent(false) end", 1, true), "the window is left open")
 end)
 
 t.done()

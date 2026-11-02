@@ -305,4 +305,112 @@ function GestureZones.forwardToLive(event, self_widget, opts)
     return _forwardToHost(host, event, self_widget)
 end
 
+-- menuBandSwipe(ev) -> is ev a swipe that starts in KOReader's top menu
+-- band (DTAP_ZONE_MENU, the top eighth by default)? A window placed at the
+-- top of the screen (over the top panel) covers that band; a swipe from it
+-- still opens the menu (maintainer), while taps there reach the window.
+function GestureZones.menuBandSwipe(ev)
+    if not (ev and ev.ges == "swipe" and ev.pos) then return false end
+    local zone
+    pcall(function() zone = G_defaults:readSetting("DTAP_ZONE_MENU") end)
+    local ratio = (type(zone) == "table" and tonumber(zone.h)) or (1 / 8)
+    local Screen = require("device").screen
+    return ev.pos.y < Screen:getHeight() * ratio
+end
+
+-- onWindow(event, inside) -> an on_window for overlayEvent: inside(pos), but
+-- a swipe from the menu band counts as off the window (menuBandSwipe).
+function GestureZones.onWindow(event, inside)
+    local ev = event.handler == "onGesture" and event.args and event.args[1]
+    local band = GestureZones.menuBandSwipe(ev)
+    return function(pos)
+        if band then return false end
+        return inside(pos)
+    end
+end
+
+-- shelfBelow(widget) -> the shelf, when it is the window right under
+-- widget (a toast aside), else nil: under a book, a full-screen editor or a
+-- second dialog it is out of sight, and turning its page would do nothing
+-- the reader can see.
+function GestureZones.shelfBelow(widget)
+    local ok, UIManager = pcall(require, "ui/uimanager")
+    local stack = ok and UIManager and UIManager._window_stack
+    if not stack then return nil end
+    local below = false
+    for i = #stack, 1, -1 do
+        local w = stack[i].widget
+        if w == widget then
+            below = true
+        elseif below and not (type(w) == "table" and w.toast) then
+            if type(w) == "table" and w.name == "bookshelf" then return w end
+            return nil
+        end
+    end
+    return nil
+end
+
+-- passSideSwipe(event, widget) -> boolean: a left or right swipe given to
+-- the shelf under widget, which turns its page, so a change made in a window
+-- over the shelf can be seen on more books without closing it (maintainer).
+-- Up and down are not: on the shelf they fold the hero or leave full screen.
+function GestureZones.passSideSwipe(event, widget)
+    local ev = event.handler == "onGesture" and event.args and event.args[1]
+    if not (ev and ev.ges == "swipe" and (ev.direction == "west" or ev.direction == "east")) then
+        return false
+    end
+    local shelf = GestureZones.shelfBelow(widget)
+    if not (shelf and shelf.handleEvent) then return false end
+    return shelf:handleEvent(event) and true or false
+end
+
+-- passSwipesOn(dialog) -> dialog: a stock ButtonDialog (a picker) passes a
+-- side swipe off it to the shelf too, as our own windows do (overlayEvent).
+-- Set on the instance (or the spec it is made from), over the class method.
+function GestureZones.passSwipesOn(dialog)
+    function dialog:handleEvent(event)
+        local ButtonDialog = require("ui/widget/buttondialog")
+        if ButtonDialog.handleEvent(self, event) then return true end
+        local ev = event.handler == "onGesture" and event.args and event.args[1]
+        local d = self.movable and self.movable.dimen
+        if ev and ev.pos and d and ev.pos:notIntersectWith(d) then
+            return GestureZones.passSideSwipe(event, self)
+        end
+        return false
+    end
+    return dialog
+end
+
+-- overlayEvent(widget, event, base, on_window[, opts]) -> boolean
+-- handleEvent for one of our windows over the shelf (a picker, a dialog, the
+-- start menu): KOReader's own gestures keep working around it, as they do
+-- over the shelf (maintainer, PW5: brightness and the menu were dead while
+-- the shelf editor was up). base: the window's class base (InputContainer,
+-- FocusManager). on_window(pos): whether a touch is on the window; a gesture
+-- off it goes to KOReader's zones first, then (no zone there) to the window,
+-- whose tap outside closes it. on_window nil: a window covering the screen,
+-- whose own handlers go first and KOReader gets what they leave. Anything
+-- not a gesture the window leaves (a zone's action: brightness, night mode)
+-- is passed to the live host.
+--
+-- A side swipe off the window that neither took turns the shelf's page
+-- behind it (passSideSwipe).
+function GestureZones.overlayEvent(widget, event, base, on_window, opts)
+    if event.handler == "onGesture" then
+        local ev = event.args and event.args[1]
+        if on_window then
+            local off = ev and ev.pos and not on_window(ev.pos)
+            if off and GestureZones.tryLiveZones(ev, opts) then
+                return true
+            end
+            if base.handleEvent(widget, event) then return true end
+            return off and GestureZones.passSideSwipe(event, widget) or false
+        end
+        if base.handleEvent(widget, event) then return true end
+        return GestureZones.tryLiveZones(ev, opts) and true or false
+    end
+    if base.handleEvent(widget, event) then return true end
+    return GestureZones.forwardToLive(event, widget, opts)
+end
+
 return GestureZones

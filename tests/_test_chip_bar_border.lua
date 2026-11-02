@@ -61,6 +61,26 @@ t.test("a DARK custom fill still gets a white one", function()
     assert(separatorOn(color8(0x20)) == WHITE, "a dark custom fill still needs white")
 end)
 
+-- PW5, 2026-10-31: the Sewing Room's mid-dark grey fill took a white line
+-- between the reading button and Home, where the bar's other borders are
+-- black (maintainer). The bar's own line wins wherever it shows on the fill.
+local line_body = src:match("\nlocal function _lineOnFill%(fill, ink%)\n(.-)\nend\n")
+assert(line_body, "could not find _lineOnFill")
+local function lineOn(fill, ink)
+    local env = { type = type, pcall = pcall, math = math,
+                  _separatorOnFill = function(f) return separatorOn(f) end }
+    local fn = compile("local fill, ink = ...\n" .. line_body, env, "_lineOnFill")
+    return fn(fill, ink)
+end
+
+t.test("between two filled chips the bar's own line wins where it shows", function()
+    assert(lineOn(color8(0x50), BLACK) == BLACK, "a mid-dark grey takes the borders' black")
+    assert(lineOn(color8(0x20), BLACK) == WHITE, "near-black still needs white")
+    assert(lineOn(color8(0xE0), BLACK) == BLACK)
+    assert(lineOn(color8(0xC0), WHITE) == BLACK, "a light fill on a dark bar: the line that shows")
+    assert(lineOn(color8(0x50), WHITE) == WHITE, "a dark bar's white line shows on mid grey")
+end)
+
 t.test("a colour that cannot answer falls back rather than erroring", function()
     local ok, res = pcall(separatorOn, { getColor8 = function() error("nope") end })
     assert(ok, "must not propagate")
@@ -375,7 +395,7 @@ t.test("...and the separator between them is the line", function()
     -- the whole decision, from the first branch to the widget it colours
     local sep = src:match("(local sep_color.-LineWidget)")
     assert(sep, "the separator block moved or was renamed")
-    assert(sep:match("_separatorOnFill%(custom%)"),
+    assert(sep:match("_lineOnFill%(custom, _stripInk%(%)%)"),
         "a custom fill needs the luminance answer, not a fixed colour")
     assert(sep:match("or%s+_stripGround%(%)"),
         "and an inverted fill is the opposite of the strip, so the strip's "
@@ -388,7 +408,7 @@ t.test("the pending ring lands on the strip's edge too", function()
     -- Inside the cell and flush, its top and bottom ran into that edge and
     -- read as one fat line. Held a border clear of it, the gap showed as a
     -- thin light line all the way round. On it is neither.
-    local pend = src:match("(if is_pending or is_cursor then.-\n        end\n)")
+    local pend = src:match("(elseif is_pending then.-\n        end\n)")
     assert(pend, "the pending-ring block moved or was renamed")
     assert(pend:find("EdgeRing:new", 1, true),
         "the ring must reach onto the strip's edge, as a button's outline does")
@@ -409,9 +429,11 @@ t.test("the pending ring lands on the strip's edge too", function()
     -- whichever way round the two are painted.
     local sep = src:match("(local function _touchesTap.-LineWidget)")
     assert(sep, "the tap-adjacent separator rule moved or was renamed")
-    assert(sep:match("c%.key == self%._pending_key")
-       and sep:match("c%.key == self%.focused_key"),
-        "both the tapped chip and the focused one carry a ring")
+    assert(sep:match("c%.key == self%._pending_key"), "the tapped chip carries a ring")
+    -- The key focus is a ring inside the chip now, so the column beside it
+    -- stays a plain separator.
+    assert(not sep:match("c%.key == self%.focused_key"),
+        "the focused chip's separators still take the ring's colour")
     assert(sep:match("sep_color = _stripInk%(%)"),
         "a separator beside the ring must take the ring's own colour")
 end)
@@ -478,7 +500,7 @@ t.test("the deepest crumb is outside the band", function()
     assert(build:match("outer%[#outer %+ 1%] = deepest_widget"),
         "the deepest crumb must be added OUTSIDE the framed band -- it is "
         .. "the name of where you are, not another control")
-    assert(build:match("HorizontalGroup:new{ band }"),
+    assert(build:match("HorizontalGroup:new{ allow_mirroring = false, band }"),
         "the outer row must carry the band and nothing else before the crumb")
     -- and the band must NOT frame itself: the chips band's frame is what
     -- gives its rows an edge, because a chip only draws one when filled.

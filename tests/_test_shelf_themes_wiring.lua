@@ -16,7 +16,9 @@ t.test("_rebuild names the shelf first and refreshes the whole screen when the l
     assert(at < body:find("dropPlanCache", 1, true), "the shelf is named after the plan cache work began")
     local sync = w:match("\nfunction BookshelfWidget:_syncShelfTheme%(%)\n(.-)\nend\n")
     assert(sync and sync:find("TP.setShelf(self.chip)", 1, true), "_syncShelfTheme does not set the shelf")
-    assert(sync:find('UIManager:setDirty("all", "full")', 1, true), "a change of look is not a full refresh")
+    -- The whole screen, without a flash (maintainer, PW5 trial): "ui".
+    assert(sync:find('UIManager:setDirty("all", "ui")', 1, true),
+        "a change of look is not a whole-screen refresh without a flash")
 end)
 
 t.test("light/dark is read through the shelf", function()
@@ -44,43 +46,38 @@ t.test("page deal states are forgotten when the shelf's look changes", function(
     assert(body and body:find("TP.shelfKey()", 1, true), "_ornSig ignores the shelf's theme, so its pool")
 end)
 
-t.test("Shelf style has the shelf's Theme row, sub-shelves too, previewed live", function()
+-- The Theme card is on the editor's front page, beside Modules: out of View
+-- mode, where it was a level down (maintainer, 2026-10-28).
+t.test("the editor's front page has the shelf's Theme card, sub-shelves too, previewed live", function()
     local ed = read("lib/bookshelf_chip_editor.lua")
     local pick = ed:match("\nfunction Editor:_pickGroupDisplay%(draft, on_change, chrome%)(.-)\nfunction Editor:")
     assert(pick, "_pickGroupDisplay moved")
-    pick = pick:gsub("%-%-[^\n]*", "")
+    assert(not pick:find('label = _("Theme")', 1, true), "View mode still has a Theme row")
+    local row = ed:match("local look_row = {}\n        do\n(.-)\n        end\n")
+    assert(row, "no Theme card on the front page")
+    row = row:gsub("%-%-[^\n]*", "")
+    assert(row:find('_("Theme: %1")', 1, true), "the card is not Theme")
     -- Every shelf, a sub-shelf included (Reddit, after 5.4): no gate on
     -- draft.parent, and a sub-shelf following its shelf of shelves says so.
-    local row = pick:match("\n        do\n(.-)\n        end\n")
-    assert(row and row:find('_("Theme: %1")', 1, true), "no Theme row")
-    assert(not pick:find("if draft.parent == nil then", 1, true), "the Theme row is still top-level shelves only")
+    assert(not row:find("if draft.parent == nil then", 1, true), "the Theme card is top-level shelves only")
     assert(row:find("local follow = draft.parent ~= nil and TP.followOf(draft.id) or nil", 1, true)
         and row:find("follow = follow,", 1, true),
-        "a sub-shelf's Theme row does not say it follows its shelf of shelves")
+        "a sub-shelf's Theme card does not say it follows its shelf of shelves")
     -- Following the default reads "Theme: Default theme", as the Theme
-    -- menu's shelf rows do; "library" is the Theme library's own name, and
-    -- a bare "Default" was not enough (maintainer, 2026-10-09).
-    assert(row:find('T(_("Theme: %1"), TP.choiceLabel(v))', 1, true),
-        "Shelf style does not name following the default Default theme")
-    assert(not row:find("as library", 1, true), "Shelf style's Theme row still says library")
+    -- menu's shelf rows do (maintainer, 2026-10-09).
+    assert(row:find("(v == nil and follow) and follow.title or TP.choiceLabel(v)", 1, true),
+        "the card does not name following the default Default theme")
     assert(row:find('require("lib/bookshelf_theme_library").show{', 1, true),
-        "the row does not open the Theme library the menus open")
-    assert(row:find("current = cur,", 1, true), "the picker does not mark the draft's choice")
+        "the card does not open the Theme library the menus open")
+    assert(row:find("current = function() return draft.theme end,", 1, true), "the picker does not mark the draft's choice")
+    -- A pick reaches the draft and the shelf behind at once, not on the
+    -- editor's debounce: the Theme library refreshes the whole screen as it
+    -- applies, so a rebuild left for later was a flash that showed nothing,
+    -- then a second with the theme (PW5, 2026-10-09).
     assert(row:find("choose = function(value) draft.theme = value end,", 1, true)
-        and row:find("apply = function() on_change(true) end,", 1, true),
+        and row:find("apply = function() commit(); settlePreview() end,", 1, true),
         "a pick does not reach the draft, or is not previewed on the shelf behind at once")
-    -- At once, not on the editor's debounce: the Theme library refreshes the
-    -- whole screen as it applies, so a rebuild left for later was a flash
-    -- that showed nothing, then a second with the theme (PW5, 2026-10-09).
-    local open_ed = ed:gsub("%-%-[^\n]*", "")
-    assert(open_ed:find("Editor:_pickGroupDisplay%(draft, function%(now%)\n%s*commit%(%)\n%s*if now then settlePreview%(%) end\n%s*rebuild%(%)"),
-        "the Theme library's apply leaves the shelf's rebuild on the debounce: two flashes")
-    assert(row:find("on_closed = show,", 1, true), "Shelf style does not come back after the picker")
-    -- First, above Show as: the theme sits behind the layout style
-    -- (maintainer, 2026-10-09).
-    local th = pick:find("local follow = draft.parent", 1, true)
-    local sa = pick:find('rows[#rows + 1] = header(_("Show as"))', 1, true)
-    assert(th and sa and th < sa, "the Theme row is not above Show as")
+    assert(row:find("on_closed = function() rebuild() end,", 1, true), "the editor does not come back after the picker")
     local tm = read("lib/bookshelf_theme_menu.lua")
     local open = tm:match("function M%.openLibrary%(S, id, touchmenu_instance, after%)(.-)\nend\n")
     assert(open and open:find('require("lib/bookshelf_theme_library").show(opts)', 1, true),

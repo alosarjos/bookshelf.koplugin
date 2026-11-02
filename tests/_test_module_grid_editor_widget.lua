@@ -33,14 +33,24 @@ for _, name in ipairs({
     "ui/widget/container/centercontainer",
     "ui/widget/container/widgetcontainer",
     "ui/widget/container/inputcontainer",
-    -- The toolbar title's palette icon (bookshelf_module_card_menu.titleRow).
+    -- Buttons in the toolbar (stock Button stubs).
     "ui/widget/button",
     "ui/widget/horizontalgroup",
     "ui/widget/horizontalspan",
 }) do
     package.preload[name] = function() return make_widget_base() end
 end
-package.preload["ui/geometry"] = function() return { new = function(_, t) return t or {} end } end
+-- combine(): the union _dirty() builds its refresh region from.
+local GeomMT = {}
+GeomMT.__index = GeomMT
+function GeomMT:combine(o)
+    local x, y = math.min(self.x, o.x), math.min(self.y, o.y)
+    return setmetatable({ x = x, y = y, w = math.max(self.x + self.w, o.x + o.w) - x,
+        h = math.max(self.y + self.h, o.y + o.h) - y }, GeomMT)
+end
+package.preload["ui/geometry"] = function()
+    return { new = function(_, t) return setmetatable(t or {}, GeomMT) end }
+end
 package.preload["ui/size"] = function()
     return { padding = { fullscreen = 10, default = 5 }, border = { default = 1, window = 2 },
              radius = { window = 4 },
@@ -57,24 +67,40 @@ package.preload["device"] = function()
                    getHeight = function() return 1680 end,
                    scaleBySize = function(_, n) return n end },
         input = { group = { Back = "Back" } },
-        hasKeys = function() return false end,
-        hasDPad = function() return false end,
+        hasKeys = function() return _G.TEST_DPAD == true end,
+        hasDPad = function() return _G.TEST_DPAD == true end,
         isTouchDevice = function() return true end,
     }
 end
 
-for _, name in ipairs({ "ui/widget/buttontable", "ui/widget/buttondialog",
-                        "ui/widget/notification", "ui/widget/textwidget" }) do
+for _, name in ipairs({ "ui/widget/iconbutton", "ui/widget/container/leftcontainer",
+                        "ui/widget/buttondialog",
+                        "ui/widget/notification", "ui/widget/textwidget",
+                        "ui/widget/linewidget" }) do
     package.preload[name] = function() return make_widget_base() end
 end
 package.preload["lib/bookshelf_colour_text"] = function() return make_widget_base() end
+-- The kit's buttons: a widget the keys can focus and press.
+package.preload["lib/bookshelf_popup_kit"] = function()
+    local W = make_widget_base()
+    return {
+        button = function(o) local b = W:new{}; b.on_tap = o.on_tap; return b end,
+        hintText = function() return W:new{} end,
+        cardify = function(f) return f end,
+    }
+end
 package.preload["ui/gesturerange"] = function() return { new = function(_, t) return t end } end
 package.preload["ui/font"] = function() return { getFace = function() return {} end } end
+package.preload["lib/bookshelf_fonts"] = function() return { getFace = function() return {}, true end } end
 local shown, closed = {}, {}
+local dirty_fns = {}
 package.preload["ui/uimanager"] = function()
     return { show = function(_, w) shown[#shown + 1] = w end,
              close = function(_, w) closed[#closed + 1] = w end,
-             setDirty = function() end, nextTick = function(_, fn) fn() end }
+             setDirty = function(_, _w, fn)
+                 if type(fn) == "function" then dirty_fns[#dirty_fns + 1] = fn end
+             end,
+             nextTick = function(_, fn) fn() end }
 end
 package.preload["lib/bookshelf_settings_store"] = function()
     return { read = function(_k, d) return d end, flush = function() end }
@@ -149,6 +175,75 @@ t.test("an open that fails leaves nothing behind", function()
     local ok = pcall(Editor.open, { bw = bw, host = h, select_id = "a" })
     assert(not ok, "expected the failure to surface to the caller")
     assert(bw._module_editor == nil, "a dead editor would block every later long-press")
+end)
+
+-- Opened on a piece from a menu (the shelf editor's add, a module's Edit)
+-- with the keys: nothing was focused, the arrows moved the grid's selection
+-- and only Enter reached the toolbar, which nothing said (maintainer,
+-- desktop). Focus goes straight onto the toolbar's first button.
+t.test("keys: opened on a piece, focus is on its toolbar", function()
+    _G.TEST_DPAD = true
+    local ok, err = pcall(function()
+        local h = host(info())
+        local ed = Editor.open{ bw = {}, host = h, select_id = "a" }
+        assert(ed._key_focus, "the toolbar has no focus")
+        ed:onDone()
+        assert(not ed._closed, "Back from the toolbar closed the editor")
+        -- Nothing selected: no toolbar, nothing to focus.
+        ed:onDone()
+        local ed2 = Editor.open{ bw = {}, host = host(info()) }
+        assert(not ed2._key_focus, "focus with no piece selected")
+        -- Just added (the shelf editor's add opens the editor, then adds):
+        -- selected after the open, focus on its toolbar all the same.
+        ed2.session:select("a")
+        assert(ed2._key_focus, "the piece just added has no focus on its toolbar")
+        ed2:onDone()
+        ed2:onDone()
+        -- The grid's own arrows select without taking the toolbar.
+        local ed4 = Editor.open{ bw = {}, host = host(info()) }
+        package.loaded["lib/bookshelf_hero_modules"].navMove = function() return "a" end
+        ed4:onEdRight()
+        package.loaded["lib/bookshelf_hero_modules"].navMove = function() return nil end
+        eq(ed4.session.selected_id, "a")
+        assert(not ed4._key_focus, "an arrow on the grid moved focus onto the toolbar")
+        ed4:onDone()
+    end)
+    _G.TEST_DPAD = nil
+    assert(ok, err)
+    -- A touch screen with no keys: no ring.
+    local ed3 = Editor.open{ bw = {}, host = host(info()), select_id = "a" }
+    assert(not ed3._key_focus, "a ring on a touch screen")
+    ed3:onDone()
+end)
+
+-- A fake screen of grey values.
+local function fakeBB(W, H, v)
+    local px = {}
+    local b = { getWidth = function() return W end, getHeight = function() return H end }
+    function b:getPixel(x, y)
+        local g = px[y * W + x] or v
+        return { getColor8 = function() return { a = g } end }
+    end
+    function b:set(x, y, g) px[y * W + x] = g end
+    return b
+end
+
+t.test("a repaint of the editor alone does not fade the faded screen again", function()
+    local orig, faded = fakeBB(120, 120, 100), fakeBB(120, 120, 200)
+    local keep = { { x = 0, y = 0, w = 60, h = 120 } }
+    local marks = Editor._fadeMarks(orig, faded, keep)
+    assert(#marks > 0)
+    for _i, m in ipairs(marks) do assert(m.x >= 60, "a mark inside a kept rect") end
+    -- The screen as the fade left it: still faded.
+    eq(Editor._stillFaded(faded, marks), true)
+    -- The shelf painted again under it: fade afresh.
+    eq(Editor._stillFaded(orig, marks), false)
+    -- The toolbar painted over a few marks: still faded.
+    faded:set(marks[1].x, marks[1].y, 0)
+    eq(Editor._stillFaded(faded, marks), true)
+    -- A fade that changed nothing leaves nothing to go on: fade (a no-op).
+    eq(#Editor._fadeMarks(orig, orig, keep), 0)
+    eq(Editor._stillFaded(orig, {}), false)
 end)
 
 t.test("no grid on the host means no editor", function()
@@ -245,7 +340,7 @@ t.test("a pinch off any module does nothing", function()
     assert(ed.session:box("a").w == 1)
 end)
 
--- Keys: Enter puts focus on the toolbar on screen (its buttons, the palette
+-- Keys: Enter puts focus on the toolbar on screen (its buttons, the X
 -- icon above them, the footer below), the arrows move along it, Enter presses
 -- the focused button and Back goes back to the grid (maintainer: on the
 -- desktop emulator keys could not reach the toolbar).
@@ -259,10 +354,11 @@ local function keyEd()
     local log = {}
     local ed = setmetatable({
         session = { selected_id = "a" },
-        _bar_table = { buttons_layout = { { btn("narrower", log), btn("wider", log) },
-                                          { btn("settings", log), btn("remove", log) } } },
-        _foot_table = { buttons_layout = { { btn("add", log), btn("done", log) } } },
-        _palette = btn("palette", log),
+        -- The title's row (its X), then the toolbar's own rows.
+        _bar_rows = { { btn("close", log) },
+                      { btn("narrower", log), btn("wider", log) },
+                      { btn("settings", log), btn("remove", log) } },
+        _foot_rows = { { btn("add", log), btn("done", log) } },
     }, { __index = Editor })
     ed._buildBands = function() end
     return ed, log
@@ -276,8 +372,55 @@ t.test("keys: Enter focuses the toolbar, arrows move along it, Enter presses", f
     ed:onEdRight(); eq(log.focus, "wider")
     ed:onEdDown();  eq(log.focus, "remove")
     ed:onEdDown();  eq(log.focus, "done", "the footer is below the toolbar")
-    ed:onEdUp(); ed:onEdUp(); ed:onEdUp(); eq(log.focus, "palette", "the palette icon is above the toolbar")
+    ed:onEdUp(); ed:onEdUp(); ed:onEdUp(); eq(log.focus, "close", "the title's X is above the toolbar")
     ed:onEdDown(); ed:onEdPress(); eq(log.pressed, "narrower")
+end)
+
+-- The toolbar's d-pad: the arrows move by where the buttons are on screen,
+-- so Left from Right reaches Left over the empty middle, and Down from Up
+-- reaches Down, not the next button in the row's list.
+t.test("keys: the arrows walk the d-pad as it looks", function()
+    -- Where the rig's portrait toolbar puts them.
+    local log = {}
+    local function at(name, x, y, w)
+        local b = btn(name, log)
+        b.dimen = { x = x, y = y, w = w or 92, h = 83 }
+        return b
+    end
+    local ed = setmetatable({
+        session = { selected_id = "a" },
+        _bar_rows = { { at("close", 1068, 1122, 63) },
+                      { at("up", 233, 1236), at("wminus", 589, 1236), at("wplus", 761, 1236),
+                        at("settings", 906, 1236, 196) },
+                      { at("left", 134, 1326), at("right", 332, 1326),
+                        at("hminus", 589, 1326), at("hplus", 761, 1326),
+                        at("style", 906, 1326, 196) },
+                      { at("down", 233, 1416), at("prev", 589, 1416), at("next", 761, 1416),
+                        at("remove", 906, 1416, 196) } },
+        _foot_rows = { { at("add", 27, 1563, 139), at("newpage", 512, 1563, 187),
+                         at("done", 1046, 1563, 163) } },
+    }, { __index = Editor })
+    ed._buildBands = function() end
+    ed:onEdPress();  eq(log.focus, "up")
+    ed:onEdDown();   eq(log.focus, "down", "Down from Up skipped the d-pad's middle")
+    ed:onEdRight();  eq(log.focus, "prev", "Right from Down left its line")
+    ed:onEdLeft();   eq(log.focus, "down")
+    ed:onEdUp();     ed:onEdLeft(); eq(log.focus, "left", "Left from Up is the d-pad's Left")
+    ed:onEdDown();   eq(log.focus, "down", "Down from Left went past the d-pad")
+    ed:onEdUp();     ed:onEdLeft(); ed:onEdRight()
+    eq(log.focus, "right", "Right from Left crossed the middle")
+    ed:onEdRight();  eq(log.focus, "hminus", "Right from the d-pad reached Height")
+    ed:onEdRight(); ed:onEdRight(); eq(log.focus, "style", "Style is level with Height")
+    ed:onEdDown();   eq(log.focus, "remove", "Remove is under Style")
+    ed:onEdUp(); ed:onEdUp(); eq(log.focus, "settings", "Settings is over Style")
+    ed:onEdLeft();   eq(log.focus, "wplus")
+    ed:onEdDown(); ed:onEdDown(); eq(log.focus, "next", "Page is below Height")
+    ed:onEdRight();  eq(log.focus, "remove", "Remove is level with Page")
+    ed:onEdLeft(); ed:onEdLeft(); eq(log.focus, "prev")
+    ed:onEdDown();   eq(log.focus, "newpage", "the footer is below the toolbar")
+    ed:onEdUp(); ed:onEdUp(); ed:onEdUp(); ed:onEdUp()
+    eq(log.focus, "close", "the title's X is above the toolbar")
+    ed:onEdRight();  eq(log.focus, "close", "Right from the X went to another line")
 end)
 
 t.test("keys: Back leaves the toolbar for the grid, not the editor", function()
@@ -290,27 +433,35 @@ end)
 
 t.test("keys: the footer's Done finishes, even with the toolbar focused", function()
     local src = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    assert(src:find('button("\\xE2\\x9C\\x93 " .. _("Done"), function() self:_finish() end)', 1, true),
+    assert(src:find('square_bottom = true, on_tap = function() self:_finish() end }', 1, true),
         "the Done button only steps out of the toolbar")
     assert(src:find("on_done = function() self:_finish() end", 1, true), "the actions dialog's Done steps out")
 end)
 
-t.test("keys: the button tables leave the arrows to the editor", function()
-    -- KOReader offers a key to a container's children first, and a
-    -- ButtonTable is a FocusManager: the footer's took the arrows, so the
-    -- editor never knew its toolbar was focused and Back closed it (rig).
-    local src = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    assert(src:find("self._bar_table.key_events = {}", 1, true), "the toolbar's table takes the arrows")
-    assert(src:find("self._foot_table.key_events = {}", 1, true), "the footer's table takes the arrows")
-end)
-
 t.test("keys: a greyed-out button is passed over by Enter", function()
     local ed, log = keyEd()
-    ed._bar_table.buttons_layout[1][1].enabled = false
+    ed._bar_rows[2][1].enabled = false
     ed:onEdPress()
     eq(log.focus, "wider", "focus started on a disabled button")
     ed:onEdLeft(); ed:onEdPress()
     eq(log.pressed, nil, "a disabled button was pressed")
+end)
+
+-- Closing the toolbar (its X): the refresh must cover where the toolbar
+-- was. The rects were a table literal starting with the toolbar's rect, nil
+-- once it had gone, and # of a table with a hole at 1 can be 0, so the old
+-- toolbar's place was left out and it stayed on screen (rig).
+t.test("closing the toolbar refreshes where it was", function()
+    local inf = info()
+    inf.container = { dimen = { x = 0, y = 0, w = 400, h = 300 } }
+    local ed = Editor.open{ bw = {}, host = host(inf), select_id = "a" }
+    ed._bar_rect = { x = 12, y = 1100, w = 1240, h = 400 }
+    ed._footer_rect = { x = 0, y = 1600, w = 1264, h = 80 }
+    for i = #dirty_fns, 1, -1 do dirty_fns[i] = nil end
+    ed:_dirty()
+    ed._bar_rect = nil   -- painted without a toolbar
+    local _mode, r = dirty_fns[#dirty_fns]()
+    assert(r and r.y <= 1100 and r.y + r.h >= 1500, "the old toolbar's place is not refreshed")
 end)
 
 t.done()

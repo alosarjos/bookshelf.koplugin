@@ -5,7 +5,8 @@ package.loaded["lib/bookshelf_i18n"] = { gettext = function(s) return s end }
 
 local Session = dofile("lib/bookshelf_module_grid_session.lua")
 local Grid    = dofile("lib/bookshelf_module_grid.lua")
-local t = dofile("tests/_helpers.lua").runner()
+local H = dofile("tests/_helpers.lua")
+local t, eq = H.runner(), H.eq
 
 local D = { cols = 4, rows = 5, cell_w = 100, cell_h = 100, gap = 10 }
 
@@ -201,11 +202,16 @@ t.test("keys-only actions with a selection cover the whole toolbar and footer", 
     local items = mockup()
     items[#items + 1] = { id = "p2", type = "module", module = "x", at = at(2, 1, 1, 1, 1) }
     local s = session(items, { selected_id = "clock" })
-    local l = labels(s:keyActions{ has_settings = true, on_done = function() end })
-    for _i, want in ipairs({ "Settings", "Remove", "Narrower", "Wider", "Shorter", "Taller",
-                              "Page 2", "New page", "Add", "Done" }) do
+    local l = labels(s:keyActions{ has_settings = true, has_colours = true, on_done = function() end })
+    -- The toolbar's own words (review 2026-10-31: Narrower / Wider / Shorter
+    -- / Taller, no Style).
+    for _i, want in ipairs({ "Settings", "Style", "Remove", "Width \xE2\x88\x92", "Width +",
+                              "Height \xE2\x88\x92", "Height +", "Page 2", "New page", "Add", "Done" }) do
         assert(l:find("|" .. want .. "|", 1, true), want .. " missing from " .. l)
     end
+    -- On a shelf a module is one row tall: no Height, as on the toolbar.
+    l = labels(s:keyActions{ on_shelf = true, on_done = function() end })
+    assert(not l:find("Height", 1, true) and not l:find("Style", 1, true), l)
 end)
 
 t.test("keys-only actions without a selection offer Add, pages and Done", function()
@@ -285,10 +291,11 @@ t.test("adjacentPage: the pages either side, a new one next, never none", functi
     items[#items + 1] = { id = "p3", type = "module", module = "x", at = at(3, 1, 1, 1, 1) }
     local s = session(items, { selected_id = "clock", page = 1 })
     assert(s:adjacentPage(-1) == nil, "a previous page before page 1")
-    assert(s:adjacentPage(1) == 3, "next should be the next page in use, got " .. tostring(s:adjacentPage(1)))
-    s.page = 3
-    assert(s:adjacentPage(-1) == 1, "previous should skip the gap, got " .. tostring(s:adjacentPage(-1)))
-    assert(s:adjacentPage(1) == nil, "a new page that would sort before this one was offered as next")
+    -- Saved as pages 1 and 3, opened as 1 and 2 (the gap closes).
+    assert(s:adjacentPage(1) == 2, "next should be the next page in use, got " .. tostring(s:adjacentPage(1)))
+    s.page = 2
+    assert(s:adjacentPage(-1) == 1, "previous should be page 1, got " .. tostring(s:adjacentPage(-1)))
+    assert(s:adjacentPage(1) == 3, "a new page after the last one was not offered as next")
     local s2 = session(mockup(), { selected_id = "clock", page = 1 })
     assert(s2:adjacentPage(1) == 2, "no new page offered as next")
     local s3 = session(mockup(), { page = 1 })
@@ -319,21 +326,60 @@ end)
 
 t.test("the footer has + Add first and Done last", function()
     local src = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    local body = src:match("\nfunction Editor:_buildFooter%(rect_w%)\n(.-)\nend\n")
+    local body = src:match("\nfunction Editor:_buildFooter%(rect_w, rect_h%)\n(.-)\nend\n")
     local add = body:find('_("Add")', 1, true)
     local done = body:find('_("Done")', 1, true)
     assert(add and done and add < done, "Done comes before + Add")
-    assert(body:find('local row = { button("+ " .. _("Add")', 1, true), "+ Add is not first")
+    assert(body:find("local row = line({ left[1],", 1, true), "+ Add is not first")
 end)
 
 t.test("on a shelf the footer has no page dots or New page", function()
     -- A shelf's pages are its own, of books: the module grid's page dots and
     -- New page made no sense there (maintainer, PW5).
     local src = io.open("lib/bookshelf_module_grid_editor.lua"):read("*a")
-    local body = src:match("\nfunction Editor:_buildFooter%(rect_w%)\n(.-)\nend\n")
+    local body = src:match("\nfunction Editor:_buildFooter%(rect_w, rect_h%)\n(.-)\nend\n")
     assert(body:find('local on_shelf = info and info.surface == "shelf"', 1, true), "the footer does not know it is on a shelf")
     assert(body:find("if #pages > 1 and not on_shelf then", 1, true), "page dots on a shelf")
     assert(body:find("local nxt = s.selected_id and not on_shelf and s:newPage()", 1, true), "New page on a shelf")
+end)
+
+-- Pages 1 and 3 with no 2 (maintainer): a page that empties closes up.
+local function threePages()
+    local items = mockup()
+    items[#items + 1] = { id = "two",   type = "module", module = "streak", at = at(2, 1, 1, 1, 1) }
+    items[#items + 1] = { id = "three", type = "module", module = "streak", at = at(3, 1, 1, 1, 1) }
+    return items
+end
+
+t.test("moving page 2's last module away closes the gap", function()
+    local s = session(threePages(), { selected_id = "two", page = 2 })
+    assert(s:moveToPage(3))
+    eq(table.concat(s:pageList(), ","), "1,2")
+    eq(boxOf(s, "three").page, 2)
+    eq(boxOf(s, "two").page, 2)
+    eq(s.page, 2, "the editor did not follow the module")
+end)
+
+t.test("removing page 2's last module closes the gap", function()
+    local s = session(threePages(), { selected_id = "two", page = 2 })
+    assert(s:remove())
+    eq(table.concat(s:pageList(), ","), "1,2")
+    eq(boxOf(s, "three").page, 2)
+end)
+
+t.test("a layout saved with a gap opens without it", function()
+    local items = mockup()
+    items[#items + 1] = { id = "three", type = "module", module = "streak", at = at(3, 1, 1, 1, 1) }
+    local s = session(items, { page = 3 })
+    eq(table.concat(s:pageList(), ","), "1,2")
+    eq(s.page, 2)
+end)
+
+t.test("a shelf's pages are its own: no closing up", function()
+    local items = mockup()
+    items[#items + 1] = { id = "three", type = "module", module = "streak", at = at(3, 1, 1, 1, 1) }
+    local s = session(items, { max_pages = 9 })
+    eq(boxOf(s, "three").page, 3)
 end)
 
 t.done()

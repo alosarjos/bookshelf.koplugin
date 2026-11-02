@@ -692,6 +692,14 @@ local function _aspectFromSizetag(tag)
     return nil
 end
 
+-- shownLook(book) -> bookLook(book) with Image contrast's boost: what a
+-- spine paints. bookLook stays the sampled colour (it is what the facts DB
+-- keeps); the boost is a view of it, so a change of strength needs nothing
+-- re-sampled.
+function SpineShelf.shownLook(book)
+    return require("lib/bookshelf_image_contrast").spineLook(SpineShelf.bookLook(book), MAX_FILL_LUMA)
+end
+
 -- bookLook(book) -> { r, g, b, aspect|nil, sampled }
 -- Day-mode colour values; painters apply the night pre-invert.
 function SpineShelf.bookLook(book)
@@ -2041,6 +2049,9 @@ function SpineBookSlot:_renderKey(night)
         -- keeps painting the old rotation until something else evicts it.
         SpineShelf.titleRotation(),
         e.binding or "hardcover",
+        -- The fill colour: Image contrast's boost changes it with nothing
+        -- else about the book changing.
+        e.look and string.format("%d,%d,%d", e.look.r or 0, e.look.g or 0, e.look.b or 0) or "-",
     }, "|")
 end
 
@@ -3527,26 +3538,33 @@ function PlankDesign:paintTo(bb, x, y)
         end
     end
 end
--- plankPreview(design, w, row_h) -> a Blitbuffer of the plank as a row
--- row_h tall paints it, cropped to the plank and whatever the design paints
--- above and below it (design nil: the plain colour plank). For the plank picker; drawn
--- offscreen, so the design's ends sit at the preview's own edges. The caller
--- frees it.
-function SpineShelf.plankPreview(design, w, row_h)
+
+-- plankPreview(design, w, row_h, ground) -> a Blitbuffer of the plank as a
+-- row row_h tall paints it, cropped to the plank and whatever the design
+-- paints above and below it (design nil: the plain colour plank). For the
+-- plank picker; drawn offscreen, so the design's ends sit at the preview's
+-- own edges. On ground (default white): the card it is shown on, so a
+-- design's transparent parts and the plain plank's bevels show the card.
+-- The caller frees it.
+function SpineShelf.plankPreview(design, w, row_h, ground)
     local p = SpineShelf.plankSurface(row_h) + SpineShelf.plankFace(row_h)
     local canvas = Blitbuffer.new(w, row_h + p, Blitbuffer.TYPE_BBRGB32)
-    canvas:fill(Blitbuffer.COLOR_WHITE)
-    ShelfPlank:new{ dimen = Geom:new{ w = w, h = row_h } }:paintTo(canvas, 0, 0)
+    canvas:fill(ground or Blitbuffer.COLOR_WHITE)
+    local g = canvas:getPixel(0, 0):getColorRGB32()
     if design then
         PlankDesign:new{ dimen = Geom:new{ w = w, h = row_h }, design = design }:paintTo(canvas, 0, 0)
+    else
+        ShelfPlank:new{ dimen = Geom:new{ w = w, h = row_h }, keep_ground = true }:paintTo(canvas, 0, 0)
     end
     -- Trimmed to the rows anything was painted on: most designs leave the
     -- bands above and below the plank empty, and a picker of planks is
-    -- tighter without them. Sampled every few columns; the ground is white.
+    -- tighter without them. Sampled every few columns against the ground.
     local function painted(y)
         for x = 0, w - 1, 6 do
             local c = canvas:getPixel(x, y):getColorRGB32()
-            if c.r < 250 or c.g < 250 or c.b < 250 then return true end
+            if math.abs(c.r - g.r) > 5 or math.abs(c.g - g.g) > 5 or math.abs(c.b - g.b) > 5 then
+                return true
+            end
         end
         return false
     end
@@ -4270,7 +4288,7 @@ function SpineShelf.plan(items, opts)
         end
         label = label or ""
         local _tl = _gettime()
-        local look = SpineShelf.bookLook(rep)
+        local look = SpineShelf.shownLook(rep)
         _t_look = _t_look + (_gettime() - _tl)
         local aspect = look.aspect
         local h = SpineLayout.spineHeight(budget, aspect)
@@ -4586,7 +4604,7 @@ function SpineShelf.plan(items, opts)
         for _k, mf in ipairs(module_flats) do
             local f, m = mf.f, mf.f.book.shelf_module
             local n = math.max(1, math.floor(tonumber(m.w) or 2))
-            local w = n * unit + (n - 1) * (opts.gap or 0)
+            local w = SpineShelf.moduleWidth(n, unit, opts.gap, opts.content_w)
             -- A pinned piece (an Ornament module) is sized as the shelf sizes
             -- the piece -- the same placement a dealt piece gets, the
             -- reader's Size and Height included -- and drawn as one
@@ -4714,6 +4732,13 @@ function SpineShelf.plan(items, opts)
     if hk then
         -- A pinned piece keeps its row: the dealt end piece gives way to it.
         hk.keep = function(i) return entries[i] and entries[i].orn_pl ~= nil end
+        -- A shelf module at a row's start claims the row: its dealt end
+        -- piece gives way rather than stand alone and push the module down
+        -- (a full-row module left page 1 with no books; maintainer).
+        hk.claims = function(i)
+            local e = entries[i]
+            return e ~= nil and e.shelf_module ~= nil and e.orn_pl == nil
+        end
         rows = SpineLayout.fillRows(widths, hk.avail, hk.gaps, hk.empty_ok, hk)
     else
         local g = {}
@@ -4973,10 +4998,11 @@ function SpineShelf.ornamentRow(opts)
     local fh      = SpineShelf.plankFace(h)
     local inset   = SpineShelf.plankInset(SpineShelf.plankUnit(h))
     local stand_h = math.max(1, h - fh - inset)
-    local kids = { dimen = Geom:new{ w = w, h = h },
-                   ShelfPlank:new{ dimen = Geom:new{ w = w, h = h } } }
+    -- A pack's plank design covers the plank, so the colour plank is not
+    -- painted under it (its transparent parts show the row's ground).
     local design = SpineShelf.plankDesignWidget(w, h)
-    if design then kids[#kids + 1] = design end
+    local kids = { dimen = Geom:new{ w = w, h = h },
+                   design or ShelfPlank:new{ dimen = Geom:new{ w = w, h = h } } }
     local hanging, spans = {}, {}
     for _i, it in ipairs(opts.items or {}) do
         local pl = it.pl
@@ -5000,10 +5026,17 @@ function SpineShelf.ornamentRow(opts)
     return OverlapGroup:new(kids), hanging, stand_h
 end
 
--- _moduleTile(e, stand_h, opts, push) -> a shelf module standing on the
--- plank: its cell (HeroModules._makeCell), e.w wide, pushed back like a
--- face-out cover. It never lifts (selection doesn't apply), so it takes the
--- whole stand bar a hair of headroom, and records what it drew for the shadow.
+-- moduleWidth(n, unit, gap, content_w) -> a shelf module's width on a spine
+-- row: n face-out widths (unit) and the gaps between, never wider than the
+-- row (content_w). Wider, it fitted no row: it stood alone on the next and
+-- the page ended at it, with no spines (a 4-wide module on tall rows). A
+-- cover shelf caps its modules at the row's slots the same way.
+function SpineShelf.moduleWidth(n, unit, gap, content_w)
+    local w = n * unit + (n - 1) * (gap or 0)
+    if content_w and content_w > 0 then w = math.min(w, content_w) end
+    return w
+end
+
 -- _bareModule(m) -> true for a module drawn with no card behind it.
 function SpineShelf._bareModule(m)
     local ok, def = pcall(function()
@@ -5017,6 +5050,15 @@ end
 -- as wide as the piece and as tall as the row. A long-press opens its module
 -- menu (it is a module), not the ornament menu; the module menu and its
 -- swipes find it through _spine_module_cells.
+-- _noteKeyOrn(opts, w_): a dealt piece that can be pinned is a stop for the
+-- keys' cursor on the shelf (BookshelfWidget:_noteKeyOrn), its long-press
+-- menu reached from the keys.
+function SpineShelf._noteKeyOrn(opts, w_)
+    if opts and opts.bw and opts.bw._noteKeyOrn and w_ and w_.pin_after_idx then
+        opts.bw:_noteKeyOrn(w_)
+    end
+end
+
 function SpineShelf._pinnedPieceTile(e, stand_h, opts)
     local Orn = require("lib/bookshelf_ornaments")
     local OverlapGroup = require("ui/widget/overlapgroup")
@@ -5031,11 +5073,20 @@ function SpineShelf._pinnedPieceTile(e, stand_h, opts)
         end
         bw._spine_module_cells = bw._spine_module_cells or setmetatable({}, { __mode = "v" })
         bw._spine_module_cells[m.id] = w_
+        -- The keys' ring while their cursor is on it.
+        w_.key_focus = function()
+            local cm = bw._cursorModule and bw:_cursorModule()
+            return cm ~= nil and cm.id == m.id
+        end
     end
     return OverlapGroup:new{ dimen = Geom:new{ w = e.w, h = opts.height or stand_h },
                              allow_mirroring = false, w_ }
 end
 
+-- _moduleTile(e, stand_h, opts, push) -> a shelf module standing on the
+-- plank: its cell (HeroModules._makeCell), e.w wide, pushed back like a
+-- face-out cover. It never lifts (selection doesn't apply), so it takes the
+-- whole stand bar a hair of headroom, and records what it drew for the shadow.
 function SpineShelf._moduleTile(e, stand_h, opts, push)
     local VerticalGroup = require("ui/widget/verticalgroup")
     local VerticalSpan  = require("ui/widget/verticalspan")
@@ -5055,6 +5106,13 @@ function SpineShelf._moduleTile(e, stand_h, opts, push)
     if opts.bw and e.shelf_module and e.shelf_module.id then
         opts.bw._spine_module_cells = opts.bw._spine_module_cells or setmetatable({}, { __mode = "v" })
         opts.bw._spine_module_cells[e.shelf_module.id] = cell
+        -- The keys' ring while their cursor is on it, decided as it paints.
+        local bw, id, paint = opts.bw, e.shelf_module.id, cell.paintTo
+        cell.paintTo = function(c, bb, x, y)
+            paint(c, bb, x, y)
+            local cm = bw._cursorModule and bw:_cursorModule()
+            if cm and cm.id == id then bw:_paintKeyRing(bb, x, y, c:getSize()) end
+        end
     end
     return VerticalGroup:new{ align = "left",
         VerticalSpan:new{ width = top }, cell,
@@ -5069,8 +5127,11 @@ function SpineShelf.rowWidget(opts)
     local OverlapGroup    = require("ui/widget/overlapgroup")
 
     local dimen = Geom:new{ w = opts.width, h = opts.height }
-    local plank = ShelfPlank:new{ dimen = Geom:new{ w = opts.width, h = opts.height },
-                                  keep_ground = opts.keep_ground }
+    -- A pack's plank design covers the plank, so the colour plank is not
+    -- painted under it (its transparent parts show the row's ground).
+    local design = SpineShelf.plankDesignWidget(opts.width, opts.height)
+    local plank = design or ShelfPlank:new{ dimen = Geom:new{ w = opts.width, h = opts.height },
+                                            keep_ground = opts.keep_ground }
     if not opts.row then
         -- A bare plank under the last books takes a piece when its shelf's
         -- turn comes round, like any other shelf (user ask: an empty shelf
@@ -5091,11 +5152,10 @@ function SpineShelf.rowWidget(opts)
             w_.overlap_offset = { x, SpineShelf.ornamentY(pl, stand_h, opts) }
             -- Past the last book: "Pin here" stands it after all of them.
             if not opts.no_pin then w_.pin_after_idx = math.huge end
+            SpineShelf._noteKeyOrn(opts, w_)
             ornament = w_
         end)
-        local design = SpineShelf.plankDesignWidget(opts.width, opts.height)
         local kids = { dimen = dimen, plank }
-        if design then kids[#kids + 1] = design end
         local hanging = {}
         local orn_list = {}
         if ornament and SpineShelf.behindAbove(ornament.placement, ornament.overlap_offset[2], opts) then
@@ -5197,6 +5257,7 @@ function SpineShelf.rowWidget(opts)
                     -- Where "Pin here" stands it: before this row's first
                     -- item (an item index into the plan's list).
                     if not opts.no_pin then w_.pin_after_idx = SpineShelf.pinAfter(opts.plan.entries, i, "before") end
+                    SpineShelf._noteKeyOrn(opts, w_)
                     local part
                     if SpineShelf.behindAbove(lead_pl, w_.overlap_offset[2], opts) then
                         hanging[#hanging + 1] = w_
@@ -5229,6 +5290,7 @@ function SpineShelf.rowWidget(opts)
                         w_.overlap_offset = { cursor + math.floor((gap_w - pl.w) / 2),
                                               SpineShelf.ornamentY(pl, stand_h, opts) }
                         if not opts.no_pin then w_.pin_after_idx = SpineShelf.pinAfter(opts.plan.entries, i, "before") end -- in the gap before e
+                        SpineShelf._noteKeyOrn(opts, w_)
                         local part
                         if SpineShelf.behindAbove(pl, w_.overlap_offset[2], opts) then
                             hanging[#hanging + 1] = w_
@@ -5301,7 +5363,7 @@ function SpineShelf.rowWidget(opts)
             elseif e.series_box then
                 tile = require("lib/bookshelf_series_box_widget"):new{
                     entry = e, width = e.w, height = stand_h, inset = inset,
-                    callbacks = opts.callbacks, book_look = SpineShelf.bookLook,
+                    callbacks = opts.callbacks, book_look = SpineShelf.shownLook,
                 }
             elseif e.face_out and e.book and e.book.add_subshelf then
                 -- A shelf of shelves' "+ Add shelf": a face-out cover's width,
@@ -5677,6 +5739,7 @@ function SpineShelf.rowWidget(opts)
                 if not opts.no_pin then w_.pin_after_idx = SpineShelf.pinAfter(opts.plan.entries, opts.row.last, "after") end
             end
         end)
+        SpineShelf._noteKeyOrn(opts, w_)
         local part
         if SpineShelf.behindAbove(pl, w_.overlap_offset[2], opts) then
             hanging[#hanging + 1] = w_
@@ -6046,8 +6109,6 @@ function SpineShelf.rowWidget(opts)
     -- keeps the books' shadows; the design's top band (drifts up the back)
     -- still stands behind the books.
     local children = { dimen = dimen, plank }
-    local design = SpineShelf.plankDesignWidget(opts.width, opts.height)
-    if design then children[#children + 1] = design end
     if recess then children[#children + 1] = recess end
     -- The pieces BEFORE the books: a piece tightened with negative padding
     -- goes behind the books beside it (maintainer). After the recess, so the
@@ -6479,6 +6540,7 @@ function SpineShelf.paintFaceOutTilt(tile)
         if night then v = 255 - v end
         return Blitbuffer.ColorRGB32(v, v, v, 0xFF)
     end
+    local foot   -- the rect behind the book that step 2 puts back
     local ok, err = pcall(function()
         -- 1. The cover alone.
         local src = Blitbuffer.new(W, H, bb:getType())
@@ -6491,16 +6553,39 @@ function SpineShelf.paintFaceOutTilt(tile)
         local saved_h, saved_paint = col.h, rawget(item, "paintTo")
         col.h = 0
         item.paintTo = function() end
-        local ok_r, err_r = pcall(function()
+        -- Only where the book stands and tips, across the row's height (and
+        -- its own shadow beside it): the whole row was put back and painted
+        -- again to open one book (maintainer, PW5). The row paints through a
+        -- clip, at its real place; a paint the clip can't take does the row.
+        local ClipBB = require("lib/bookshelf_clip_bb")
+        local margin = Screen:scaleBySize(8)
+        local fx0 = math.max(rx, math.floor(math.min(rect.x, info.minx)) - margin)
+        local fx1 = math.min(rx + rw, math.ceil(math.max(rect.x + rect.w, info.maxx)) + margin)
+        -- From just above the book's top (its page block, which sits on the
+        -- cover, and its selection ring included), not the row's: a plank design's drop (its shadow, an apron) from the
+        -- row above reaches into this row's top, and only that row paints
+        -- it. Put back from the row's top, it went missing behind the book
+        -- (maintainer, PW5). The book never drew above its own top.
+        local fy0 = math.max(ry, rect.y - math.ceil(fx.depth or 0) - margin)
+        foot = { x = fx0, y = fy0, w = math.max(1, fx1 - fx0), h = math.max(1, ry + rh - fy0) }
+        local function ground(r)
             -- A row in a Shelf module kept its own ground (rowWidget).
             local g = row._ground
             local ok_wp, Wallpaper = pcall(require, "lib/bookshelf_wallpaper")
             if g and g:getWidth() == rw and g:getHeight() == rh then
-                bb:blitFrom(g, rx, ry, 0, 0, rw, rh)
-            elseif not (ok_wp and Wallpaper.restore(bb, rx, ry, rw, rh)) then
-                bb:paintRectRGB32(rx, ry, rw, rh, Blitbuffer.ColorRGB32(0xFF, 0xFF, 0xFF, 0xFF))
+                bb:blitFrom(g, r.x, r.y, r.x - rx, r.y - ry, r.w, r.h)
+            elseif not (ok_wp and Wallpaper.restore(bb, r.x, r.y, r.w, r.h)) then
+                bb:paintRectRGB32(r.x, r.y, r.w, r.h, Blitbuffer.ColorRGB32(0xFF, 0xFF, 0xFF, 0xFF))
             end
-            row:paintTo(bb, rx, ry)
+        end
+        local ok_r, err_r = pcall(function()
+            ground(foot)
+            local ok_c = pcall(function() row:paintTo(ClipBB.new(bb, { foot }), rx, ry) end)
+            if not ok_c then
+                foot = { x = rx, y = ry, w = rw, h = rh }
+                ground(foot)
+                row:paintTo(bb, rx, ry)
+            end
         end)
         item.paintTo = saved_paint
         col.h = saved_h
@@ -6611,11 +6696,12 @@ function SpineShelf.paintFaceOutTilt(tile)
         logger.dbg("[bookshelf] face-out opening pose failed, tipping instead:", err)
         return SpineShelf._paintFaceOutTip(tile)
     end
-    -- The row was repainted across its width, and the pose may rise above it.
-    local x0 = math.min(rx, math.floor(info.minx))
-    local y0 = math.min(ry, math.floor(info.miny))
-    local x1 = math.max(rx + rw, math.ceil(info.maxx))
-    local y1 = math.max(ry + rh, math.ceil(info.maxy))
+    -- The footprint was repainted, and the pose may rise above the row.
+    foot = foot or { x = rx, y = ry, w = rw, h = rh }
+    local x0 = math.min(foot.x, math.floor(info.minx))
+    local y0 = math.min(foot.y, math.floor(info.miny))
+    local x1 = math.max(foot.x + foot.w, math.ceil(info.maxx))
+    local y1 = math.max(foot.y + foot.h, math.ceil(info.maxy))
     return x0, y0, x1 - x0, y1 - y0
 end
 

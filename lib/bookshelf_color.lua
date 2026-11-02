@@ -56,9 +56,8 @@ local DEFAULT_HEX = {
     border             = "#000000",  -- cover frame + pill / badge borders
     -- Folder overlay defaults match the color-mode appearance of the
     -- FolderCard module's CARDBOARD / CARDBOARD_EDGE constants. On B&W
-    -- devices the picker is replaced by a % black nudge dialog so this
-    -- hex is only ever shown as the picker's "default" swatch on color
-    -- screens. Field names match rawColors().folder_bg / .folder_fg so
+    -- devices the picker offers greys, so this hex is only ever shown as the
+    -- picker's "default" swatch on color screens. Field names match rawColors().folder_bg / .folder_fg so
     -- the settings menu's pickColor helper can pass the same string to
     -- both lookups.
     folder_bg   = "#E7C9A9",
@@ -223,6 +222,79 @@ function Color.paintRect(bb, x, y, w, h, c)
         return bb:paintRectRGB32(x, y, w, h, c)
     end
     return bb:paintRect(x, y, w, h, c)
+end
+
+-- Color.rawInvertBegin(bb) -> token; Color.rawInvertEnd(bb, token)
+-- Bracket a ROUNDED true-colour paint (paintRoundedRectRGB32,
+-- paintBorderRGB32). Their corners go through paintRoundedCorner, a Lua pixel
+-- loop that applies the buffer's invert flag itself; on Android the whole
+-- frame is inverted again at blit time, so in night mode the corners came out
+-- un-inverted while the straight parts were inverted once (#217's white
+-- border corners; a selection ring with light edges and black corners).
+-- With the flag off for the call, every part is inverted once, at the blit.
+-- Other devices invert in hardware or in the C blitter and are left alone.
+function Color.rawInvertBegin(bb)
+    if not (bb and bb.getInverse and bb:getInverse() == 1) then return false end
+    local ok_d, Device = pcall(require, "device")
+    if not (ok_d and Device and Device.isAndroid and Device:isAndroid()) then return false end
+    bb:setInverse(0)
+    return true
+end
+function Color.rawInvertEnd(bb, token)
+    if token then bb:setInverse(1) end
+end
+
+-- Color.paintRoundedRect: paintRoundedRect, keeping a picked colour (the same
+-- dispatch as paintRect above).
+function Color.paintRoundedRect(bb, x, y, w, h, c, r)
+    if type(c) == "nil" then return end   -- not c == nil: see parseColorValue
+    if bb.paintRoundedRectRGB32 and Blitbuffer.isColor8 and not Blitbuffer.isColor8(c) then
+        local raw = Color.rawInvertBegin(bb)
+        bb:paintRoundedRectRGB32(x, y, w, h, c, r)
+        Color.rawInvertEnd(bb, raw)
+        return
+    end
+    return bb:paintRoundedRect(x, y, w, h, c, r)
+end
+
+-- Color.paintBorder: paintBorder, keeping a picked colour. Plain paintBorder
+-- draws its straight edges with paintRect, which takes the colour's grey on
+-- a screen with KOReader's C blitter (a colour Kobo, a Kindle Colorsoft): a
+-- blue border came out grey with only its corners blue.
+-- On Android with the screen inverted, the RGB32 border's corner arcs apply
+-- their own night invert on top of the frame's (#217): suppressed for the
+-- call, as the spine widget's colour-safe frame does.
+function Color.paintBorder(bb, x, y, w, h, bw, c, r, anti_alias)
+    if type(c) == "nil" or not bw or bw <= 0 then return end   -- not c == nil: see parseColorValue
+    if bb.paintBorderRGB32 and Blitbuffer.isColor8 and not Blitbuffer.isColor8(c) then
+        local raw = Color.rawInvertBegin(bb)
+        bb:paintBorderRGB32(x, y, w, h, bw, c, r, anti_alias)
+        Color.rawInvertEnd(bb, raw)
+        return
+    end
+    return bb:paintBorder(x, y, w, h, bw, c, r, anti_alias)
+end
+
+-- Color.colourBorder(frame) -> frame: a FrameContainer whose border keeps a
+-- picked colour. KOReader's FrameContainer paints its background in colour
+-- but its border through plain paintBorder (above), so the border is drawn
+-- again over itself, at the same place, in colour.
+function Color.colourBorder(frame)
+    local paint = frame.paintTo
+    function frame:paintTo(bb, x, y)
+        paint(self, bb, x, y)
+        local c = self.color
+        if (self.bordersize or 0) > 0 and type(c) ~= "nil" and bb.paintBorderRGB32
+                and Blitbuffer.isColor8 and not Blitbuffer.isColor8(c) then
+            local sz = self:getSize()
+            local w, h = self.width or sz.w, self.height or sz.h
+            local m = self.margin or 0
+            local aa = G_reader_settings and G_reader_settings:nilOrTrue("anti_alias_ui")
+            Color.paintBorder(bb, x + m, y + m, w - 2 * m, h - 2 * m, self.bordersize, c,
+                self.radius, aa)
+        end
+    end
+    return frame
 end
 
 function Color.flushCache()

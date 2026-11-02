@@ -51,7 +51,7 @@ local function harness(tabs, tab_id, hopts)
     e.TabModel = {
         NO_SOURCE = "none", SHELVES_KIND = "shelves",
         load = function() return deepCopy(e.saved) end,
-        saveDeferred = function(list) e.saved = deepCopy(list); log("saveDeferred") end,
+        saveDeferred = function(list) e.saved = deepCopy(list); e.gen = e.gen + 1; log("saveDeferred") end,
         save = function(list) e.saved = deepCopy(list); log("save") end,
         flush = function() log("flush") end,
         childrenOf = function(id, list)
@@ -72,6 +72,12 @@ local function harness(tabs, tab_id, hopts)
         show = function(_, w) e.shown[#e.shown + 1] = w end,
     }
     e.ConfirmBox = { new = function(_, o) return o end }
+    -- The settings' generation: what a close compares to decide to write.
+    e.gen = 0
+    e.require = function(n)
+        if n == "lib/bookshelf_settings_store" then return { generation = function() return e.gen end } end
+        return require(n)
+    end
     e.Editor = { _deepCopy = deepCopy, _sameValue = sameValue }
     e._ = function(s) return s end
     e.pairs, e.ipairs, e.type = pairs, ipairs, type
@@ -155,11 +161,13 @@ t.test("Close flushes, and runs a rebuild still owed at once", function()
     eq(#e.changes, 1, "the owed rebuild ran twice")
 end)
 
-t.test("Close with nothing changed does not rebuild the shelf", function()
+t.test("Close with nothing changed does not rebuild the shelf, nor write the file", function()
     local e = harness({ shelf("home", "all") }, "home")
     e.api.finish()
     eq(#e.changes, 0)
     eq(e.closed, 1)
+    -- Perf review 2026-10-31: a whole-file write (~130 ms on a PW5) for nothing.
+    assert(not table.concat(e.log, ","):find("flush", 1, true), "an unchanged editor writes the file")
 end)
 
 t.test("Close is once, whichever ways it is reached", function()
@@ -238,21 +246,24 @@ t.test("a confirmed collection arrangement rebuilds the shelf", function()
     eq(#e.changes, 1, "the arrangement never reached the shelf")
 end)
 
--- The wiring, at source level: the footer is Delete, Copy, Move to, Add --
--- no Close (the X, a tap outside and Back close it), no Save, no Cancel.
-t.test("the footer is Delete, Copy, Move to, Add: no Close, Save or Cancel", function()
+-- The wiring, at source level: Copy and Move to on the strip; Delete, New
+-- shelf and Close in the button row at the foot (the strip was crowded,
+-- maintainer); no Save, no Cancel.
+t.test("the actions are Delete, Copy, Move to, New shelf and Close: no Save or Cancel", function()
     local body = edit_tab:gsub("%-%-[^\n]*", "")
     assert(not body:find('_("Save")', 1, true), "the editor still has a Save button")
-    assert(not body:find('text             = _("Close"),', 1, true), "the footer still has Close")
+    assert(body:find('footer_text    = _("Delete")', 1, true), "Delete is not in the foot")
+    assert(body:find('footer_text    = _("New shelf")', 1, true), "New shelf is not in the foot")
     assert(body:find('text         = _("Copy"),', 1, true), "no Copy")
     assert(body:find('callback     = function() copyShelf() end,', 1, true), "Copy does nothing")
-    assert(body:find('callback     = function() moveShelf() end,', 1, true), "no Move to")
+    assert(body:find('if canMove() then return moveShelf() end', 1, true), "no Move to")
     assert(not body:find('text       = _("Cancel"),', 1, true), "the editor still has a Cancel button")
 end)
 
-t.test("the X, a tap outside and Back are all Close", function()
+t.test("Close, a tap outside and Back are all Close", function()
     local body = edit_tab:gsub("%-%-[^\n]*", "")
-    assert(body:find("close_callback    = function() finish() end,", 1, true), "the X is not Close")
+    assert(body:find('{ text = _("Close"), callback = function() finish() end }', 1, true),
+        "the foot's Close is not Close")
     local tap = body:match("dialog%.onTapClose = function.-\n    end\n")
     assert(tap and tap:find("finish()", 1, true), "a tap outside is not Close")
     local back = body:match("dialog%.onClose = function.-\n    end\n")
