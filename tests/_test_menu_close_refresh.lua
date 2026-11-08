@@ -22,7 +22,10 @@ local function TouchMenuClass()
     return TM
 end
 
-t.test("over the shelf: the menu's own area, refreshed without a flash", function()
+t.test("over the shelf: the whole screen, refreshed without a flash (572)", function()
+    -- Not just the menu's area: a dialog a menu item opens on the next tick
+    -- (other plugins' do) is drawn in the same pass, and only a whole-screen
+    -- refresh reaches it, as KOReader's flash did. "ui", not "flashui".
     dirty = {}
     local TM = TouchMenuClass()
     M.install(TM, { UIManager = UIManager, GZ = GZ, Screen = Screen })
@@ -31,8 +34,7 @@ t.test("over the shelf: the menu's own area, refreshed without a flash", functio
     menu:onCloseWidget()
     eq(TM.flashed, 0, "KOReader's full-screen flash ran")
     eq(#dirty, 1); eq(dirty[1].kind, "ui")
-    local r = dirty[1].region
-    eq(r.x, 2); eq(r.y, 0); eq(r.w, 596); eq(r.h, 408)
+    eq(dirty[1].region, nil, "a region left a next-tick dialog stale")
 end)
 
 t.test("over a book or the file browser: KOReader's flash", function()

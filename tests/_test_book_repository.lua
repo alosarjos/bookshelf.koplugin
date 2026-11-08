@@ -5536,6 +5536,44 @@ test("getBySource: a plugin's registered source is filtered, sorted and paged (i
     assert(list[1].source_kind == "demo", "records are stamped with their source")
 end)
 
+-- A Spines shelf builds its whole list, and the list-mode branch called the
+-- source's cover hook for every record in it: a Kobo library on Spines copied
+-- every book's cover on every rebuild, to colour spines whose colour was
+-- already kept. On Spines the hook waits until a cover is actually asked for
+-- (Repo.getCoverBB: a spine with no kept colour, a face-out cover).
+test("getBySource: on Spines a source's cover hook runs only when a cover is asked for", function()
+    local Sources = require("lib/bookshelf_sources")
+    local asked = {}
+    Sources.register("kobolike", {
+        api = 1,
+        label = function() return "Kobo-like" end,
+        available = function() return true end,
+        list = function()
+            local out = {}
+            for i = 1, 50 do out[i] = { title = "Book " .. i, filepath = "/kl/" .. i .. ".kepub" } end
+            return out
+        end,
+        cover = function(rec)
+            asked[#asked + 1] = rec.filepath
+            return { cover_of = rec.filepath }, 60, 90
+        end,
+    })
+    Repo.spine_light = true
+    local list = Repo.getBySource({ kind = "kobolike" }, nil, nil, 0, 1000000)
+    Repo.spine_light = nil
+    local whole_list_calls = #asked
+    local bb = Repo.getCoverBB("/kl/7.kepub")
+    -- Covers view still attaches the page's covers as it fetches.
+    asked = {}
+    local page = Repo.getBySource({ kind = "kobolike" }, nil, nil, 0, 10)
+    Sources.unregister("kobolike")
+    assert(#list == 50, "the whole list comes back, got " .. #list)
+    assert(whole_list_calls == 0, "a Spines fetch asked for " .. whole_list_calls .. " covers")
+    assert(list[1].has_cover == true, "a record from a cover-hook source can still face out")
+    assert(type(bb) == "table" and bb.cover_of == "/kl/7.kepub", "the cover is fetched when asked for")
+    assert(#asked == 10 and page[1].cover_bb, "a Covers page attaches its own covers")
+end)
+
 test("getBySource: an unregistered or failing source is an empty shelf, not an error", function()
     local Sources = require("lib/bookshelf_sources")
     Sources.register("flaky", {
@@ -6833,6 +6871,187 @@ test("printedPageCount: stable numbers or a p(N) name, never the render", functi
     assert(Repo.printedPageCount(nil) == nil)
     _G._test_docsettings_data = nil
     Repo.invalidateProgressCache()
+end)
+
+-- ============================================================================
+-- getDecades: the Decades shelf groups by the year %published shows
+-- ============================================================================
+
+local function withDecadeLibrary(dates, fn)
+    Repo.invalidateWalkCache()
+    Repo.invalidateSeriesCache()
+    local files = { ".", ".." }
+    local bim = {}
+    for fp in pairs(dates) do
+        files[#files + 1] = fp:match("[^/]+$")
+        bim[fp] = { title = fp:match("([^/]+)%.epub$"), authors = "A" }
+    end
+    package.loaded["libs/libkoreader-lfs"].dir = function(path)
+        local f = (path == "/lib") and files or { ".", ".." }
+        local i = 0; return function() i = i + 1; return f[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(_fp, key)
+        if key == "mode" then return "file" end; return 0
+    end
+    _G._test_bim_data = bim
+    _G._test_settings = { home_dir = "/lib", bookshelf_latest_walk_depth = 1 }
+    local saved = package.loaded["lib/bookshelf_published"]
+    package.loaded["lib/bookshelf_published"] = {
+        info = function(b) return b and dates[b.filepath] or nil end,
+        forRecord = function(b)
+            local d = b and dates[b.filepath]
+            return d and d ~= false and d:sub(1, 4) or ""
+        end,
+    }
+    local SE = require("lib/bookshelf_sort_engine")
+    if SE.clearPublishedMemo then SE.clearPublishedMemo() end
+    local ok, err = pcall(fn)
+    package.loaded["lib/bookshelf_published"] = saved
+    if SE.clearPublishedMemo then SE.clearPublishedMemo() end
+    Repo.invalidateWalkCache()
+    Repo.invalidateBookCache("test")
+    if not ok then error(err, 0) end
+end
+
+local function names(out)
+    local n = {}
+    for i, g in ipairs(out) do n[i] = g.series_name end
+    return table.concat(n, ",")
+end
+
+test("getDecades: books go in the decade of their year; no year is Unknown", function()
+    withDecadeLibrary({
+        ["/lib/a.epub"] = "1851-10-18",
+        ["/lib/b.epub"] = "1859",
+        ["/lib/c.epub"] = false,
+    }, function()
+        local out, total = Repo.getDecades(10, 0)
+        assert(total == 2, "expected 2 groups, got " .. tostring(total))
+        local by = {}
+        for _i, g in ipairs(out) do by[g.series_name] = g end
+        assert(by["1850s"] and #by["1850s"].books == 2, "1850s should hold 2 books: " .. names(out))
+        assert(by["Unknown"] and #by["Unknown"].books == 1, "Unknown should hold 1 book: " .. names(out))
+    end)
+end)
+
+test("getDecades: newest first or oldest first, Unknown always last", function()
+    withDecadeLibrary({
+        ["/lib/a.epub"] = "1851",
+        ["/lib/b.epub"] = "2016-02-18",
+        ["/lib/c.epub"] = false,
+        ["/lib/d.epub"] = "1923",
+    }, function()
+        local out = Repo.getDecades(10, 0, { { key = "published", reverse = true } })
+        assert(names(out) == "2010s,1920s,1850s,Unknown", "newest first: " .. names(out))
+        out = Repo.getDecades(10, 0, { { key = "published", reverse = false } })
+        assert(names(out) == "1850s,1920s,2010s,Unknown", "oldest first: " .. names(out))
+    end)
+end)
+
+test("getDecades: the tab's default sort is the decade, newest first", function()
+    withDecadeLibrary({
+        ["/lib/a.epub"] = "1851",
+        ["/lib/b.epub"] = "2016",
+        ["/lib/c.epub"] = false,
+    }, function()
+        local out = Repo.getBySource({ kind = "decades" }, nil, nil, 0, 10)
+        assert(names(out) == "2010s,1850s,Unknown", "default order: " .. names(out))
+    end)
+end)
+
+test("one decade: the drill holds that decade's books", function()
+    withDecadeLibrary({
+        ["/lib/a.epub"] = "1851",
+        ["/lib/b.epub"] = "1859-01",
+        ["/lib/c.epub"] = "1923",
+        ["/lib/d.epub"] = false,
+    }, function()
+        local list, total = Repo.getBySource({ kind = "decade", id = "1850" }, nil, nil, 0, 10)
+        assert(total == 2, "expected 2 books in the 1850s, got " .. tostring(total))
+        local _l, unknown = Repo.getBySource({ kind = "decade", id = Repo.DECADE_UNKNOWN }, nil, nil, 0, 10)
+        assert(unknown == 1, "expected 1 book with no year, got " .. tostring(unknown))
+    end)
+end)
+
+test("a decade card sorts by its own year", function()
+    local SE = require("lib/bookshelf_sort_engine")
+    assert(SE.publishedOf({ decade_year = 1850 }) == 1850)
+end)
+
+-- issue 587: books in a series with no series number (manga chapters) came
+-- out in random order: every one tied at 0 ahead of the numbered books, and
+-- nothing broke the tie. Numbered first, then the rest by title.
+test("getSeriesGroups: books with no series number follow by title", function()
+    Repo.invalidateWalkCache()
+    package.loaded["readhistory"].hist = {}
+    _G._test_bim_data = {
+        ["/lib/z.epub"] = { title = "Yotsuba 1",  series = "Yotsuba" },
+        ["/lib/a.epub"] = { title = "Yotsuba 3",  series = "Yotsuba" },
+        ["/lib/m.epub"] = { title = "Yotsuba 2",  series = "Yotsuba" },
+        ["/lib/q.epub"] = { title = "Yotsuba 10", series = "Yotsuba" },
+        ["/lib/n.epub"] = { title = "Omnibus",    series = "Yotsuba #1" },
+    }
+    _G._test_settings = { home_dir = "/lib", bookshelf_latest_walk_depth = 1 }
+    package.loaded["libs/libkoreader-lfs"].dir = function(path)
+        local files = (path == "/lib")
+            and { ".", "..", "z.epub", "a.epub", "m.epub", "q.epub", "n.epub" } or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(_fp, key)
+        if key == "mode" then return "file" end
+        if key == "modification" then return 0 end
+    end
+    local groups = Repo.getSeriesGroups(10)
+    assert(#groups == 1, "expected one series, got " .. #groups)
+    local got = {}
+    for i, b in ipairs(groups[1].books) do got[i] = b.filepath end
+    local want = { "/lib/n.epub", "/lib/z.epub", "/lib/m.epub", "/lib/a.epub", "/lib/q.epub" }
+    assert(table.concat(got, " ") == table.concat(want, " "),
+        "got " .. table.concat(got, " "))
+end)
+
+-- Discussion 590: a "Latest added" shelf filtered by status and sorted by
+-- date built a light record for EVERY book in the library (a BIM read each,
+-- the author split, a custom-metadata stat) before drawing one page; on
+-- 5,900 books on a slow card that was most of the time. A status filter and
+-- a date sort need only the path, the walk's own stat and the sidecar, so
+-- only the page's books are read now. A filter that does read metadata
+-- (genre) still reads every book.
+test("getBySource: a status-filtered, date-sorted Latest reads only the page's books (590)", function()
+    local files = {}
+    for i = 1, 20 do files[i] = string.format("b%02d.epub", i) end
+    _setupWalk(files, { ["b03.epub"] = "complete", ["b04.epub"] = "reading" })
+    local reads = {}
+    local bim = package.loaded["bookinfomanager"]
+    local prev = bim.getBookInfo
+    bim.getBookInfo = function(self, fp, wc) reads[fp] = true; return prev(self, fp, wc) end
+    local ok, err = pcall(function()
+        local list, total = Repo.getBySource({ kind = "latest" },
+            { statuses = { unread = true, reading = true } },
+            { { key = "date_added", reverse = true } }, 0, 4)
+        assert(total == 19, "expected 19 books (all but the finished one), got " .. tostring(total))
+        assert(#list == 4, "expected a page of 4, got " .. #list)
+        for _i, b in ipairs(list) do
+            assert(b.filepath ~= "/lib/b03.epub", "the finished book passed the filter")
+            assert(b.title, "a page book was not read: " .. tostring(b.filepath))
+        end
+        local n = 0
+        for _fp in pairs(reads) do n = n + 1 end
+        assert(n <= 4, "read " .. n .. " books for a page of 4")
+        -- A genre filter reads every book (it needs their genres).
+        Repo.invalidateWalkCache()
+        reads = {}
+        Repo.getBySource({ kind = "latest" },
+            { statuses = { unread = true }, genres = { fantasy = true } },
+            { { key = "date_added", reverse = true } }, 0, 4)
+        n = 0
+        for _fp in pairs(reads) do n = n + 1 end
+        assert(n >= 19, "a genre filter skipped reading books: " .. n)
+    end)
+    bim.getBookInfo = prev
+    _teardownWalk()
+    assert(ok, err)
 end)
 
 -- ============================================================================

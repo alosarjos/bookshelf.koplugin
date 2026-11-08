@@ -96,6 +96,7 @@ local function widget(chip, drill)
     w._clearDpadFocus = function() end
     w._syncPageFromCursor = function() end
     w._rebuild = function(self) self.log[#self.log + 1] = "rebuild:" .. self.chip end
+    w._noteBusy = function() end
     w._drillBackTo = function(self, d) self.log[#self.log + 1] = "drill:" .. d end
     return w
 end
@@ -237,7 +238,7 @@ end)
 t.test("a sub-shelf's run badge opens it; the editor can hide the + tile", function()
     local sp = io.open("lib/bookshelf_spine_shelf.lua"):read("*a")
     assert(sp:find("local id = sp.item and sp.item.shelf_subshelf", 1, true), "badge taps do not read the sub-shelf")
-    assert(sp:find("if bk.add_subshelf or bk._series_box then face_out = true end", 1, true), "the + tile is not face-out sized")
+    assert(sp:find("if bk.add_subshelf or bk._series_box or bk.is_opds_nav then face_out = true end", 1, true), "the + tile is not face-out sized")
     assert(src:find("function(id) bw:_enterSubShelf(id) end", 1, true), "the badge overlay does not open sub-shelves")
     assert(src:find("function(id) bw:_editSubShelf(id) end", 1, true), "a long-press on a badge does not edit the sub-shelf")
     assert(sp:find("function BadgeOverlay:onHold(", 1, true), "the badge overlay takes no long-press")

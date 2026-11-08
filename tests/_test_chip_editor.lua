@@ -68,7 +68,7 @@ local VALID_SORT_KEYS = {
     last_opened = true, date_added = true, percent_read = true,
     read_status = true, read_status_active = true, favorites_first = true, rating = true,
     page_count = true, book_count = true, size = true,
-    collection_order = true,
+    collection_order = true, published = true,
 }
 
 t.test("every SOURCE_SORT_DEFAULTS entry is a non-empty list of {key,reverse}, except fixed-order sources", function()
@@ -114,6 +114,7 @@ t.test("GROUP_KINDS is exactly the expected set", function()
     eq(D.GROUP_KINDS, {
         series = true, authors = true, genres = true,
         tags = true, formats = true, languages = true,
+        decades = true,
     })
 end)
 
@@ -667,13 +668,76 @@ t.test("shelf style: binding and series boxes are independent, applied as picked
     local p = openStyle(draft, nil, "Spines")
     p.find("Book binding").on_pick("paperback")
     eq(draft.book_binding, "paperback"); eq(draft.series_boxes, nil)
-    p.find("Series boxes").on_pick(true)
+    p.find("Series boxes").on_pick("cover")
     eq(draft.series_boxes, true); eq(draft.book_binding, "paperback")
     p.find("Book binding").on_pick("hardcover")
     eq(draft.book_binding, nil, "the default binding is stored as absence")
-    p.find("Series boxes").on_pick(false)
+    p.find("Series boxes").on_pick("off")
     eq(draft.series_boxes, nil)
     eq(p.changes(), 4, "a pick was not applied")
+end)
+
+t.test("shelf style: series boxes can be Plain, and an old stored value reads as Cover (577)", function()
+    local draft = { view_mode = "spines" }
+    local p = openStyle(draft, nil, "Spines")
+    eq(p.find("Series boxes").active, "off")
+    p.find("Series boxes").on_pick("plain")
+    eq(draft.series_boxes, "plain")
+    eq(openStyle(draft, nil, "Spines").find("Series boxes").active, "plain")
+    eq(openStyle({ view_mode = "spines", series_boxes = "slipcase" }, nil, "Spines")
+        .find("Series boxes").active, "cover", "a test build's value lost its box")
+end)
+
+-- Issue 503: Covers and List group an opened group's series too, with the
+-- same stored setting; On keeps a Spines style already chosen.
+t.test("shelf style: Covers and List have Series boxes, on or off, the same setting", function()
+    for _i, mode in ipairs({ "covers", "list" }) do
+        local draft = { view_mode = mode }
+        local p = openStyle(draft)
+        local row = p.find("Series boxes")
+        assert(row, mode .. " has no Series boxes")
+        eq(row.active, false)
+        row.on_pick(true)
+        eq(draft.series_boxes, true)
+        eq(openStyle(draft).find("Series boxes").active, true)
+        p.find("Series boxes").on_pick(false)
+        eq(draft.series_boxes, nil)
+        draft.series_boxes = "plain"
+        openStyle(draft).find("Series boxes").on_pick(true)
+        eq(draft.series_boxes, "plain", mode .. " On lost the Spines page's style")
+    end
+end)
+
+t.test("shelf style: an Auto level's card says when Covers or List has series boxes", function()
+    local draft = { view_mode = "auto", series_boxes = true }
+    local descs = {}
+    for _i, b in ipairs(openStyle(draft).blocks()) do
+        if b.type == "option" and b.desc then descs[#descs + 1] = b.desc end
+    end
+    assert(#descs == 2, "no level cards")
+    for _i, d in ipairs(descs) do
+        assert(d:find("series boxes", 1, true), "a level card left series boxes out: " .. d)
+    end
+end)
+
+t.test("shelf style: series boxes can be Spines, stored as its own value", function()
+    local draft = { view_mode = "spines" }
+    local p = openStyle(draft, nil, "Spines")
+    p.find("Series boxes").on_pick("spines")
+    eq(draft.series_boxes, "spines")
+    eq(openStyle(draft, nil, "Spines").find("Series boxes").active, "spines")
+    p.find("Series boxes").on_pick("cover")
+    eq(draft.series_boxes, true)
+end)
+
+t.test("shelf style: Book sizes stores only Same", function()
+    local draft = { view_mode = "spines" }
+    local p = openStyle(draft, nil, "Spines")
+    eq(p.find("Book sizes").active, "varied")
+    p.find("Book sizes").on_pick("same")
+    eq(draft.spine_same_size, true)
+    p.find("Book sizes").on_pick("varied")
+    eq(draft.spine_same_size, nil)
 end)
 
 t.test("shelf style: Author on spine can be turned off and back on (#439)", function()
@@ -738,6 +802,14 @@ t.test("shelf style: under Auto, each listing level's card has its own numbers",
     eq(inside.find("Rows").value, "6", "an unset Level 2 number does not show Level 1's")
     inside.find("Rows").on_inc()
     eq(draft.list_rows_l2, 7); eq(draft.list_rows, 6)
+end)
+
+t.test("the editor's no-spines flag comes from the source's own answer (588)", function()
+    local src = io.open("lib/bookshelf_chip_editor.lua"):read("*a")
+    assert(src:find("is_opds = is_opds_src or no_spines_src,", 1, true),
+        "the editor withholds Spines from every fetch-mode source")
+    assert(src:find("and not Sources.spinesOk(draft.source.kind)", 1, true),
+        "the editor does not ask the source whether it can stand as spines")
 end)
 
 t.test("shelf style: a spines shelf whose source became a catalogue shows covers", function()

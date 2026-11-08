@@ -153,6 +153,8 @@ local TabBar = InputContainer:extend{
     left_inset  = nil,   -- x of the first tab; align with the body text's left
     font_size   = nil,   -- base point size before Screen:scaleBySize; default below
     on_select   = nil,
+    band        = nil,   -- a colour: the strip's ground (the book menu's header
+                         -- band), its cells white on it; nil leaves it white
 }
 
 function TabBar:init()
@@ -293,6 +295,17 @@ function TabBar:paintTo(bb, x, y)
     local sep_w   = self.sep_w
     local box_top = y + self.top_pad
 
+    -- On a band: its ground down to the baseline, and each cell white, so the
+    -- labels and the inverted active cell read as before.
+    if self.band then
+        local base_y0 = box_top + self._n_rows * self._row_h - Screen:scaleBySize(2)
+        bb:paintRect(x, y, self.dimen.w, base_y0 - y, self.band)
+        for i = 1, #self._labels do
+            bb:paintRect(x + self._tab_x[i], box_top + (self._tab_row[i] - 1) * self._row_h,
+                self._tab_w[i], self._row_h, Blitbuffer.COLOR_WHITE)
+        end
+    end
+
     -- Labels first (black text on the white background); pin each focus cell's
     -- dimen to its tab rect for FocusManager. The active cell is inverted after,
     -- flipping its background to black and its label to white.
@@ -428,6 +441,10 @@ function ReviewsModal:init()
     -- Near-fullscreen with the standard screen-edge inset (matches TextViewer).
     self.width  = self.width  or (screen_w - Space.px(30))
     self.height = self.height or (screen_h - Space.px(30))
+    -- The header band: with a cover header (the book menu), the header and
+    -- the tabs sit on a light grey, a shade darker than the strips some tabs
+    -- open with (STRIP_BG, 0xEE), so the two read apart (maintainer).
+    self._band = self.header_builder and Blitbuffer.COLOR_GRAY_D or nil
 
     -- Source tabs (e.g. File vs Hardcover description). Only meaningful with 2+.
     self._tabs = (type(self.tabs) == "table" and #self.tabs > 0) and self.tabs or nil
@@ -738,7 +755,7 @@ function ReviewsModal:_buildHeader()
     -- as _owned_cover_bb); we free it once in onCloseWidget.
     if self._header_widget then return self._header_widget end
     local pad = self._side_pad  -- L/R + top match the tabs / body inset
-    local inner = self.header_builder(self.width - 2 * pad)
+    local inner = self.header_builder(self.width - 2 * pad, self._band)
     if not inner then return nil end
     self._owned_cover_bb = inner._owned_cover_bb
     -- The header's cover frame (stamps its painted dimen): the Open button
@@ -768,9 +785,10 @@ function ReviewsModal:_buildHeader()
     local side_m = Space.px(8)
     local top_m  = Space.px(6)
     local x_box = FrameContainer:new{
-        background = Blitbuffer.COLOR_WHITE, bordersize = 0, margin = 0,
+        background = self._band or Blitbuffer.COLOR_WHITE, bordersize = 0, margin = 0,
         padding = Screen:scaleBySize(4),  -- small tap target around the icon
-        IconWidget:new{ icon = "close", width = icon_size, height = icon_size },
+        IconWidget:new{ icon = "close", width = icon_size, height = icon_size,
+            alpha = self._band and true or false },   -- on the band, not a white square (no == nil: cdata)
     }
     local x_btn = InputContainer:new{
         dimen = Geom:new{ w = x_box:getSize().w, h = x_box:getSize().h }, x_box }
@@ -783,6 +801,24 @@ function ReviewsModal:_buildHeader()
         frame,
         x_btn,
     }
+    -- The header band (maintainer: it separates the header and tabs from the
+    -- tab's page): its ground under the header, the window's top corners
+    -- rounded as the window's are inside its border.
+    if self._band then
+        local band, hw = self._band, self._header_widget
+        local r = math.max(0, Space.radius.window - Size.border.window)
+        local paint = hw.paintTo
+        hw.paintTo = function(w, bb, x, y)
+            local sz = w:getSize()
+            if r > 0 then
+                bb:paintRoundedRect(x, y, sz.w, math.min(sz.h, 2 * r), band, r)
+                bb:paintRect(x, y + r, sz.w, sz.h - r, band)
+            else
+                bb:paintRect(x, y, sz.w, sz.h, band)
+            end
+            return paint(w, bb, x, y)
+        end
+    end
     return self._header_widget
 end
 
@@ -968,8 +1004,22 @@ function ReviewsModal:_assemble()
     local _t2 = _gettime()
     self._tab_body = body
     -- Crop inner self-repaints (pill tap-feedback inverts) to the native scroll
-    -- body when it's active; HTML tabs manage their own painting.
-    self.cropping_widget = is_native and body or nil
+    -- body when it's active; HTML tabs manage their own painting. KOReader
+    -- repaints the crop at its dimen, and a tab body that is a bare
+    -- VerticalGroup (the Cover tab) never gets one: a page chevron's tap
+    -- highlight crashed on it (issue 585). A borderless frame around the
+    -- body records its dimen when painted, whatever the tab builds. A body
+    -- that is a scroll container already is the crop, as KOReader expects;
+    -- the frame also answers getCropRegion, which an icon button's tap flash
+    -- (UIManager:widgetInvert) asks for.
+    local crop
+    if is_native and not body.getCropRegion then
+        crop = FrameContainer:new{
+            bordersize = 0, margin = 0, padding = 0, body,
+            getCropRegion = function(f) return f.dimen end,
+        }
+    end
+    self.cropping_widget = is_native and (crop or body) or nil
     local buttons = self:_buildButtons()
     local _t3 = _gettime()
     local vg = VerticalGroup:new{ align = "left" }
@@ -980,7 +1030,7 @@ function ReviewsModal:_assemble()
         vg[#vg + 1] = self._tab_row
         self._tabrow_pos = #vg
     end
-    vg[#vg + 1] = body
+    vg[#vg + 1] = crop or body
     vg[#vg + 1] = self._button_separator
     vg[#vg + 1] = buttons
     self._vgroup = vg
@@ -1167,6 +1217,7 @@ function ReviewsModal:_buildTabRow()
         left_inset  = self._side_pad,
         font_size   = TAB_LABEL_FONT_BASE * label_scale / 100,
         on_select   = function(i) self:_switchTab(i) end,
+        band        = self._band,
     }
 end
 
@@ -1271,9 +1322,13 @@ function ReviewsModal:onCloseWidget()
     -- Reclaim the popup's churned Lua garbage: modal close is an infrequent,
     -- natural boundary, and the book-detail popup allocates a fair amount per
     -- tab/chip/rating interaction. Native resources are already freed above.
-    -- A second later, not now: a full collect of the PW5's ~100 MB heap was
-    -- ~190 ms of the close, ahead of the shelf's repaint under the popup.
-    UIManager:scheduleIn(1, function() collectgarbage("collect") end)
+    -- In slices once the reader stops (BookshelfWidget.collectSoon), not a
+    -- full collect a second later: that walked the whole heap at once
+    -- (~0.5 s on a PW5), in the way of whatever the reader tapped next.
+    UIManager:scheduleIn(1, function()
+        local ok, BW = pcall(require, "lib/bookshelf_widget")
+        if ok and BW and BW.collectSoon then BW.collectSoon() end
+    end)
     UIManager:setDirty(nil, function()
         return "ui", self.frame.dimen
     end)

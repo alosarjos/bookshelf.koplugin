@@ -22,6 +22,16 @@ package.loaded["bookinfomanager"] = {
     isExtractingInBackground = function() return false end,
 }
 
+-- Files on disk: everything exists unless listed here.
+local missing = {}
+package.loaded["libs/libkoreader-lfs"] = {
+    attributes = function(fp, what)
+        if missing[fp] then return nil end
+        if what == "mode" then return "file" end
+        return { mode = "file" }
+    end,
+}
+
 local Repo = {
     bimGetBookInfo = function(BIM, fp) return BIM:getBookInfo(fp), nil end,
     currentFilepath = function() return nil end,
@@ -29,7 +39,7 @@ local Repo = {
 }
 
 local src = io.open("lib/bookshelf_widget.lua"):read("*a")
-local body = src:match("\nfunction BookshelfWidget:_kickOffMissingMetaExtractionNow%(items, slot_w, slot_h, hero_w, hero_h%)\n(.-)\nend\n")
+local body = src:match("\nfunction BookshelfWidget:_kickOffMissingMetaExtractionNow%(items, slot_w, slot_h, hero_w, hero_h, shown_n%)\n(.-)\nend\n")
 assert(body, "could not find BookshelfWidget:_kickOffMissingMetaExtractionNow - renamed?")
 
 local BookshelfWidget = {
@@ -46,7 +56,7 @@ local env = setmetatable({
     logger = { dbg = function() end, warn = function() end },
     _gettime = function() return 0 end,
 }, { __index = _G })
-local code = "return function(self, items, slot_w, slot_h, hero_w, hero_h)\n" .. body .. "\nend"
+local code = "return function(self, items, slot_w, slot_h, hero_w, hero_h, shown_n)\n" .. body .. "\nend"
 local chunk = assert((loadstring or load)(code, "=_kickOffMissingMetaExtractionNow"))
 if setfenv then setfenv(chunk, env) else chunk = assert(load(code, "=_kickOffMissingMetaExtractionNow", "t", env)) end
 local kickOff = chunk()
@@ -140,6 +150,22 @@ t.test("both Refresh metadata paths grant the permission", function()
     local i = bulk:find("refresh_paths[#refresh_paths + 1] = fp", 1, true)
     assert(i and bulk:find("bw:_allowCoverFetch(fp)", i, true),
         "bulk refresh does not allow the covers")
+end)
+
+t.test("a book deleted from disk is not queued, and is asked about again later", function()
+    -- Deleted outside KOReader (Syncthing, USB) while the shelf still lists
+    -- it: each queue was a forked extraction that failed on the missing
+    -- file, until BIM's own try limit gave up on it.
+    rows = {}
+    missing = { ["/b/gone.epub"] = true }
+    local self = newSelf()
+    local items = { { filepath = "/b/gone.epub" }, { filepath = "/b/here.epub" } }
+    kickOff(self, items, 200, 300, 400, 600)
+    eq(queued["/b/gone.epub"], nil, "queued a file that is not there")
+    assert(queued["/b/here.epub"], "a present book was dropped")
+    missing = {}
+    kickOff(self, items, 200, 300, 400, 600)
+    assert(queued["/b/gone.epub"], "a file that came back must be queued, not memoised away")
 end)
 
 t.done()

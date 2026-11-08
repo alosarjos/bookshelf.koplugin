@@ -79,6 +79,50 @@ test("a file that changed size gets another try", function()
     assert(not G.skipped(s, "/b/fixed.epub"), "a changed file stayed skipped")
 end)
 
+test("a failed render's log line: the error, the room it had, what was free", function()
+    eq(G.failureNote("not enough memory", 31457280, 62914560), "not enough memory; room 30 MB, free 60 MB")
+    eq(G.failureNote(nil, nil, nil), "no count; room ?, free ?")
+    eq(G.failureNote("a\n  b", 0, 0), "a b; room 0 MB, free 0 MB")
+end)
+
+test("the scan logs why a render gave no count", function()
+    local m = io.open("main.lua"):read("*a")
+    assert(m:find('return "!" .. G.failureNote(', 1, true))
+    assert(m:find('logger.warn("bookshelf: page count render failed:"', 1, true))
+end)
+
+test("a kernel from 4.7 caps the child's own memory, not its address space", function()
+    -- Address space counts every font and library mapped in whole; on the
+    -- PW5 a render using ~30 MB failed with 120 MB of address space spare.
+    local MB = 1048576
+    local res, limit, room = G.pickLimit("4.9.77-lab126", 400 * MB, 60 * MB, 200 * MB)
+    eq(res, G.RLIMIT_DATA); eq(limit, 160 * MB); eq(room, 100 * MB)
+    res, limit = G.pickLimit("5.10.0", 400 * MB, 60 * MB, 200 * MB)
+    eq(res, G.RLIMIT_DATA)
+end)
+
+test("an older kernel, or no data size, keeps the address-space cap", function()
+    local MB = 1048576
+    local res, limit, room = G.pickLimit("4.1.15", 400 * MB, 60 * MB, 200 * MB)
+    eq(res, G.RLIMIT_AS); eq(limit, 500 * MB); eq(room, 100 * MB)
+    eq((G.pickLimit("3.0.35", 400 * MB, 60 * MB, 200 * MB)), G.RLIMIT_AS)
+    eq((G.pickLimit("4.9.77", 400 * MB, nil, 200 * MB)), G.RLIMIT_AS)
+    eq((G.pickLimit(nil, 400 * MB, 60 * MB, 200 * MB)), G.RLIMIT_AS)
+end)
+
+test("nothing known: no cap", function()
+    eq(G.pickLimit("4.9.77", nil, nil, nil), nil)
+    eq(G.pickLimit("4.9.77", 400, 60, nil), nil)
+end)
+
+test("kernel versions compare by number, not text", function()
+    eq(G.kernelAtLeast("4.10.0", 4, 7), true)
+    eq(G.kernelAtLeast("4.7", 4, 7), true)
+    eq(G.kernelAtLeast("4.6.99", 4, 7), false)
+    eq(G.kernelAtLeast("10.0", 4, 7), true)
+    eq(G.kernelAtLeast("junk", 4, 7), false)
+end)
+
 os.execute("rm -rf " .. dir)
 print(string.format("PASS %d  FAIL %d", pass, fail))
 os.exit(fail == 0 and 0 or 1)

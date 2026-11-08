@@ -839,9 +839,21 @@ function LibraryModal:_renderSearchInput(content_width)
         -- search row from the segmented (square) chip strip below. The
         -- inner FrameContainer is what InputText renders the border
         -- through (inputtext.lua:569), so set radius there before paint.
-        input._frame_textwidget.radius = PopupKit.RADIUS
-        -- It sits on the grey strip: a white field.
-        input._frame_textwidget.background = Blitbuffer.COLOR_WHITE
+        -- It sits on the grey strip: a white field. InputText builds a new
+        -- frame on every keystroke (initTextBox), so set both again after
+        -- each: once only, typing left the field square with the grey
+        -- strip round a white text box.
+        local function styleField(this)
+            this._frame_textwidget.radius = PopupKit.RADIUS
+            this._frame_textwidget.background = Blitbuffer.COLOR_WHITE
+        end
+        local orig_initTextBox = input.initTextBox
+        input.initTextBox = function(this, ...)
+            local r = orig_initTextBox(this, ...)
+            styleField(this)
+            return r
+        end
+        styleField(input)
     else
         local desired = self.search_query or ""
         if self._search_input:getText() ~= desired then
@@ -1069,6 +1081,8 @@ function LibraryModal:_onChipTap(chip_key)
     self:_dismissKeyboard()
     self.active_chip = chip_key
     self.page = 1
+    -- A new list from its first page, not a page turn (on_page_shown).
+    self._page_shown = 1
     if self.config.on_chip_tap then self.config.on_chip_tap(chip_key) end
     self:refresh()
 end
@@ -1592,6 +1606,15 @@ function LibraryModal:refresh()
     -- content-derived size. setDirty(nil, ...) was triggering full-screen
     -- repaints that stacked ~1s each on e-ink.
     self:_dirty()
+    -- config.on_page_shown(page): a page other than the last one shown is on
+    -- screen, however it got there (arrows, swipe, go to page, keys). Not
+    -- for the page the modal opened on. After the paint is queued, so a
+    -- caller that does real work here does not hold the page back.
+    if self.config.on_page_shown and self.page ~= self._page_shown then
+        local first = (self._page_shown == nil)
+        self._page_shown = self.page
+        if not first then pcall(self.config.on_page_shown, self.page) end
+    end
 end
 
 -- _dirty(): repaint the modal and refresh only its own box. Naming the window

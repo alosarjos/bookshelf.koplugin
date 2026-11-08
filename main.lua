@@ -28,6 +28,10 @@
 --   * is_doc_only = false — plugin loads in both FileManager and Reader contexts,
 --     which is required so the close-document hook fires inside the Reader.
 
+-- Before any module of ours: they load from compiled bytecode kept on the
+-- device (lib/bookshelf_bytecode), not parsed from source on every start.
+pcall(function() require("lib/bookshelf_bytecode").install() end)
+
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 -- First of all: a KOReader older than Bookshelf needs gets a stub plugin that
 -- says so, instead of a crash somewhere in what follows.
@@ -2531,6 +2535,10 @@ function Bookshelf:scanAllMetadata()
         if not ok then error(err) end
         local Repo = require("lib/bookshelf_book_repository")
         Repo.invalidateWalkCache()
+        -- Read the new rows now: the rows in memory are from before the
+        -- scan, so its new books would have no series until the background
+        -- refresh (issue 581).
+        if Repo.reloadLightMeta then Repo.reloadLightMeta() end
         -- Also drop per-chip book-list caches so the next tab render
         -- re-reads from the fresh BIM data rather than the pre-scan
         -- cached order. Without this the user has to switch tabs to
@@ -2571,11 +2579,11 @@ function Bookshelf:scanPageCounts(opts)
     --   probe  the rest, through the sources the dialog left ticked, in its
     --          order: publisher page list, Hardcover, render, a Calibre
     --          column, then a p(N) file name. The first that answers wins.
-    -- An opened book is probed too when all it has is KOReader's rendered
-    -- count, which follows that book's own font if it was changed: the spine's
-    -- thickness wants the one layout every scanned book shares (issue 387,
-    -- SpineShelf.thicknessPages). Its sidecar, and so its %pages, are left
-    -- alone.
+    -- An opened book's own count (KOReader's, from its sidecar) is a count:
+    -- "Only books without a page count" skips it (573), though it follows
+    -- that book's font where the scan's counts share one layout (issue 387,
+    -- SpineShelf.thicknessPages). Recount all probes it; its sidecar, and so
+    -- its %pages, are left alone either way.
     -- A count from an older scan ("scan", untagged on a never-opened book,
     -- or "layout": a render at crengine's own defaults, 3-4x short of what
     -- the reader shows) is not shown, so those books are counted again.
@@ -2699,7 +2707,13 @@ function Bookshelf:scanPageCounts(opts)
             local trusted = not opts.recount and not echo
                             and (psrc == "print" or psrc == "user" or psrc == "calibre"
                                  or psrc == "filename" or psrc == "stable"
-                                 or pc_src == "stable")
+                                 or pc_src == "stable"
+                                 -- A count from opening the book (KOReader's
+                                 -- own, in the sidecar) is a count: "Only
+                                 -- books without a page count" leaves it be
+                                 -- (573). Recount all still replaces it.
+                                 or psrc == "render"
+                                 or (pc_src == "render" and (tonumber(pc) or 0) > 0))
             if trusted then
                 skipped = skipped + 1
             else
@@ -2951,7 +2965,9 @@ function Bookshelf:scanPageCounts(opts)
                     completed, pages_s = Trapper:dismissableRunInSubprocess(
                     function()
                         -- This child, not KOReader, is what runs out of memory.
-                        pcall(function() require("lib/bookshelf_render_guard").childLimits() end)
+                        local G = require("lib/bookshelf_render_guard")
+                        local ok_g, headroom, avail = pcall(G.childLimits)
+                        if not ok_g then headroom, avail = nil, nil end
                         local ok_pc, pc = pcall(function()
                             local DocumentRegistry = require("document/documentregistry")
                             local doc = DocumentRegistry:openDocument(fp)
@@ -2968,7 +2984,10 @@ function Bookshelf:scanPageCounts(opts)
                             pcall(function() doc:close() end)
                             return n
                         end)
-                        return tostring(ok_pc and pc or "")
+                        if ok_pc and tonumber(pc) and tonumber(pc) > 0 then return tostring(pc) end
+                        -- No count: why, for the log (not a number, so the
+                        -- parent takes it as a failure).
+                        return "!" .. G.failureNote(ok_pc and "no count" or pc, headroom, avail)
                     end,
                     job, true)
                     job.in_run = false
@@ -2994,6 +3013,8 @@ function Bookshelf:scanPageCounts(opts)
                         { name = nameFor(fp), pages = pages }
                 else
                     failed[#failed + 1] = fp
+                    logger.warn("bookshelf: page count render failed:", fp,
+                        type(pages_s) == "string" and pages_s:match("^!(.*)") or tostring(pages_s))
                 end
                 -- Flush every few books: a mid-scan crash or battery death
                 -- should not cost the finished work.
