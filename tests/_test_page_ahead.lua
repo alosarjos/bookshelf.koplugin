@@ -64,7 +64,7 @@ local function env(PC, top)
         end,
         _gettime = function() return _G._TEST_NOW and _G._TEST_NOW() or 0 end,
         coroutine = coroutine,
-        PAGE_AHEAD_QUIET_S = 1.0, BACKGROUND_QUIET_S = 1.0, PAGE_AHEAD_STEP_S = 0.05, PAGE_AHEAD_SLICE_S = 0.08, PAGE_AHEAD_DEPTH = _G._TEST_DEPTH or 1,
+        PAGE_AHEAD_QUIET_S = 1.0, BACKGROUND_QUIET_S = 1.0, PAGE_AHEAD_STEP_S = 0.05, PAGE_AHEAD_SLICE_S = 0.08, PAGE_AHEAD_DEPTH = _G._TEST_DEPTH or 1, PAGE_AHEAD_WAKE_RETRY_S = 1,
         logger = { dbg = function() end, warn = function() end },
         UIManager = { getTopmostVisibleWidget = function() return top end,
                       scheduleIn = function(um, _d, fn) um.queue[#um.queue + 1] = fn end,
@@ -274,6 +274,81 @@ t.test("nothing is built under another window, or past the last page", function(
     s._pageForwardPossible = function() return false end
     run(s, PC, s)
     eq(#PC.kept, 0, "built past the last page")
+end)
+
+-- After a sleep the Spines list has expired, and the first turn fetched it
+-- again with the device just awake: 338 ms against 115 ms for the same fetch
+-- awake (maintainer, PW5). A wake builds ahead again, which fetches it before
+-- the turn, and rebuilds a kept page whose data moved while asleep. The sleep
+-- screen may still be up when Resume arrives (a delay, a tap or a gesture to
+-- leave it), so for a while after a wake the build waits for the shelf.
+t.test("after a wake, the build waits out the sleep screen, then runs", function()
+    local PC = cacheStub()
+    local s = shelf()
+    local um = wire(s, PC, s)
+    local over = { "sleep screen" }
+    um.getTopmostVisibleWidget = function() return over end
+    s._ahead_wake_until = 120         -- the clock stub reads 0
+    s:_pageAheadRun()
+    eq(#PC.kept, 0, "built under the sleep screen")
+    eq(#um.queue, 1, "gave up while the sleep screen was still up")
+    tick(um)
+    eq(#um.queue, 1, "stopped trying after one look")
+    over = s
+    local n = 0
+    while tick(um) do n = n + 1; assert(n < 20, "never finished") end
+    eq(#PC.kept, 1, "the page was not built once the shelf was back")
+end)
+
+t.test("outside the wake window, or on a closed shelf, it does not keep trying", function()
+    local PC = cacheStub()
+    local s = shelf()
+    local um = wire(s, PC, { "a menu" })
+    s:_pageAheadRun()
+    eq(#um.queue, 0, "retried with no wake")
+    s._ahead_wake_until = -1
+    s:_pageAheadRun()
+    eq(#um.queue, 0, "retried after the window")
+    s._ahead_wake_until, s._closed = 120, true
+    s:_pageAheadRun()
+    eq(#um.queue, 0, "retried for a closed shelf")
+end)
+
+t.test("a wake arms it, with the window open", function()
+    local res = bodyOf("onResume%(%)", "onResume")
+    assert(res:find("self._ahead_wake_until = _gettime() + PAGE_AHEAD_WAKE_WINDOW_S", 1, true), "no wake window")
+    assert(res:find("self:_pageAheadArm(self._page_ahead_dir or 1)", 1, true), "a wake does not build ahead")
+end)
+
+t.test("a data generation bump builds ahead again, once, outside the step that bumped it", function()
+    local body = bodyOf("_onDataGeneration%(%)", "_onDataGeneration")
+    local e = env(cacheStub(), nil)
+    e.PAGE_AHEAD_DELAY_S = 0.5
+    local f = compile("local self = ...\n" .. body, e, "ondatagen")
+    local armed = {}
+    local w = { _page_ahead_dir = -1,
+                _pageAheadArm = function(_s, dir) armed[#armed + 1] = dir end }
+    f(w); f(w)
+    eq(#armed, 0)                 -- not from inside whatever bumped it
+    eq(#e.UIManager.queue, 1)     -- two bumps, one build
+    e.UIManager.queue[1]()
+    eq(#armed, 1); eq(armed[1], -1)
+    f(w)                          -- a later bump arms again
+    eq(#e.UIManager.queue, 2)
+    w._closed = true
+    e.UIManager.queue[2]()
+    eq(#armed, 1)                 -- closed meanwhile: nothing
+    f(w)
+    eq(#e.UIManager.queue, 2)     -- closed: not even scheduled
+end)
+
+t.test("the shelf listens for bumps while open, and stops when closed", function()
+    local init = bodyOf("init%(%)", "init")
+    local close = bodyOf("onCloseWidget%(%)", "onCloseWidget")
+    assert(init:find("Repo.onDataGeneration(self, BookshelfWidget._onDataGeneration)", 1, true),
+        "init does not listen for data generation bumps")
+    assert(close:find("Repo.onDataGeneration(self, nil)", 1, true),
+        "onCloseWidget does not stop listening")
 end)
 
 t.test("never for a feed's or another plugin's page (no network the reader did not ask for)", function()

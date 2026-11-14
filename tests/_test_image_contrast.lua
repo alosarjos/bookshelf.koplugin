@@ -157,8 +157,15 @@ test("a cover is boosted after its raw disk copy is written", function()
     local f = src("lib/bookshelf_scaled_cover_cache.lua")
     local put = f:match("\nfunction ScaledCoverCache:put%(.-\nend\n")
     assert(put, "put not found")
-    local store, boost = put:find("D.store", 1, true), put:find("boostImage", 1, true)
+    local store, boost = put:find("self:_writeNow(filepath, bb)", 1, true), put:find("boostImage", 1, true)
     assert(store and boost and store < boost, "the disk copy would be boosted")
+    -- A write left for later (_queueWrite) would find the buffer boosted by
+    -- then: while boosting, what waits is a raw copy taken before the boost.
+    local copy = put:find("local ok_c, raw = pcall(function() return bb:copy() end)", 1, true)
+    local queue = put:find("self:_queueWrite(filepath, wbb, UM, wbb ~= bb)", 1, true)
+    assert(copy and queue and copy < queue and queue < boost,
+        "a cover being boosted could have its disk write deferred past the boost")
+    assert(f:find("local ok, wrote = pcall(D.store, filepath, bb)", 1, true), "_writeNow no longer stores")
 end)
 
 test("the wallpaper's adjustment is in its keys and before the night inversion", function()
@@ -221,7 +228,7 @@ test("covers made from boosted ones carry the mark", function()
     assert(w:find("_derived(bb, _coverFillBB(bb, img_w, img_h))", 1, true),
         "a collage drawn as a cover is boosted twice")
     assert(not w:find("_boostCover(external_bb)   -- put() would too", 1, true)
-        and w:find("paint_bb = ScaledCoverCache:put(ck, external_bb)\n            else\n                _boostCover(external_bb)", 1, true),
+        and w:find("paint_bb = ScaledCoverCache:put(ck, external_bb)\n    else\n        _boostCover(external_bb)", 1, true),
         "a keyed custom cover must be boosted by put(), after its raw disk copy")
     local d = src("lib/bookshelf_stack_display.lua")
     assert(d:find("IC.markBoosted(out)", 1, true), "the collage is not marked")

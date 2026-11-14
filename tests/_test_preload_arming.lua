@@ -39,7 +39,7 @@ local CANCEL   = bodyOf("_cancelPreload%(%)", "_cancelPreload")
 local function harness(self_)
     local scheduled = {}
     local env = {
-        ipairs = ipairs, pairs = pairs, type = type, tostring = tostring,
+        ipairs = ipairs, pairs = pairs, type = type, tostring = tostring, pcall = pcall,
         table = table, string = string, math = math,
         PRELOAD_START_DELAY_S = 0.35,
         UIManager = {
@@ -90,6 +90,34 @@ t.test("after the first paint it schedules immediately, as before", function()
     schedule(1)
     assert(#scheduled == 1, "a page-turn preload stopped being scheduled")
     assert(not self_._preload_pending, "a page-turn preload was needlessly held")
+end)
+
+t.test("Spines with covers facing out: the warm loop runs first, then the page is built", function()
+    local armed
+    local self_ = { _first_paint_done = true,
+                    _isSpineMode = function() return true end,
+                    _spineWarmable = function() return true end,
+                    _pageAheadArm = function(_s, dir) armed = dir end }
+    local _e, scheduled, schedule = harness(self_)
+    schedule(-1)
+    assert(#scheduled == 1, "the warm loop was not scheduled")
+    assert(self_._preload_dir == -1)
+    -- Which covers is worked out in the loop's first step, after the pause,
+    -- not on the turn: it reads statuses for books off the screen.
+    assert(self_._preload_queue == nil, "the covers were chosen on the turn")
+    assert(armed == nil, "the page was built ahead before its covers were warm")
+end)
+
+t.test("Spines with no covers facing out builds the page ahead at once", function()
+    local armed
+    local self_ = { _first_paint_done = true,
+                    _isSpineMode = function() return true end,
+                    _spineWarmable = function() return false end,
+                    _pageAheadArm = function(_s, dir) armed = dir end }
+    local _e, scheduled, schedule = harness(self_)
+    schedule(1)
+    assert(#scheduled == 0, "a warm loop with nothing to warm was scheduled")
+    assert(armed == 1, "the page was not built ahead")
 end)
 
 t.test("arming does nothing when nothing is held", function()
