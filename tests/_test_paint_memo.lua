@@ -139,7 +139,7 @@ t.test("the spine plan keeps its entries between page turns", function()
     assert(not plan:find("_plan_cache%.items%s*==%s*items"), "the entries cache checks items by identity")
     assert(plan:find("table%.concat%(ids"), "the entries key does not fingerprint the items")
     local w = read("lib/bookshelf_widget.lua")
-    local rb = body(w, "\nfunction BookshelfWidget:_rebuild%(%)\n")
+    local rb = body(w, "\nfunction BookshelfWidget:_rebuildPrepare%(%)\n")
     assert(rb:find("dropPlanCache", 1, true), "a rebuild does not drop the plan cache")
 end)
 
@@ -148,7 +148,9 @@ t.test("the pagination plan does not balance every row of the chip", function()
     -- 1234-book chip it took 585ms, for boundaries the pages never use.
     local w = read("lib/bookshelf_widget.lua")
     local pf = body(w, "\nfunction BookshelfWidget:_spinePageFirsts%(build, dims%)\n")
-    assert(pf:find("balance%s*=%s*false"), "_spinePageFirsts still asks for a balanced plan")
+    -- The plan itself is _spineFirstsOf's.
+    local plan_fn = body(w, "\nfunction BookshelfWidget:_spineFirstsOf%(items, dims, c%)\n")
+    assert(plan_fn:find("balance%s*=%s*false"), "_spinePageFirsts still asks for a balanced plan")
     -- ...and it is not built unless somebody asks. The map plans every book
     -- in the chip, which on a big folder is a second of sidecar reads on the
     -- way in, and nothing on a spine shelf shows a page number.

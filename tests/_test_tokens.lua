@@ -530,6 +530,14 @@ test("reviewsHtml marks a spoiler review in its byline", function()
     assert(not plain:find("Spoiler", 1, true), plain)
 end)
 
+test("reviewsHtml: an empty list can say why, escaped", function()
+    local html = Tokens.reviewsHtml{ reviews = {}, empty_text = "Sign in <again>" }
+    assert(html:find("<p>Sign in &lt;again&gt;</p>", 1, true), html)
+    assert(not html:find("No non-spoiler", 1, true), html)
+    local plain = Tokens.reviewsHtml{ reviews = {} }
+    assert(plain:find("No non-spoiler reviews found.", 1, true), plain)
+end)
+
 test("reviewsHtml says 1 like, not 1 likes", function()
     local one = Tokens.reviewsHtml{ reviews = { { user_name = "R", text = "<p>x</p>", likes_count = 1 } } }
     assert(one:find("1 like", 1, true) and not one:find("1 likes", 1, true), one)
@@ -561,6 +569,29 @@ test("reviewsHtml renders shared star glyphs for each review", function()
     -- (the overall rating/counts/Refresh line is a native widget row now, not
     -- part of this HTML -- see bookshelf_widget.lua's ReviewsHeader).
     has(html, '<p class="stars">' .. HC_STAR:rep(4) .. HC_EMPTY .. "</p>", "per-review star row")
+end)
+-- Hardcover stars round to the nearest half star (maintainer, 2026-11-14):
+-- they used to drop everything under the next half, so 3.9 showed 3 1/2 and
+-- 3.4 showed 3. Under .25 rounds down, .25 to .74 is a half, .75 up is full.
+test("starString rounds a Hardcover rating to the nearest half star", function()
+    local function row(full, half, empty)
+        return HC_STAR:rep(full) .. HC_HALF:rep(half) .. HC_EMPTY:rep(empty)
+    end
+    eq(Tokens.starString(3.0),  row(3, 0, 2), "3.0")
+    eq(Tokens.starString(3.24), row(3, 0, 2), "3.24 rounds down")
+    eq(Tokens.starString(3.25), row(3, 1, 1), "3.25 is a half")
+    eq(Tokens.starString(3.5),  row(3, 1, 1), "3.5")
+    eq(Tokens.starString(3.74), row(3, 1, 1), "3.74 is a half")
+    eq(Tokens.starString(3.75), row(4, 0, 1), "3.75 rounds up")
+    eq(Tokens.starString(3.9),  row(4, 0, 1), "3.9 rounds up")
+    eq(Tokens.starString(4.8),  row(5, 0, 0), "4.8 is five")
+    eq(Tokens.starString(0.2),  row(0, 0, 5), "0.2 shows empty stars, not nothing")
+    eq(Tokens.halfStars(4.3), 4.5)
+    eq(Tokens.halfStars(4.2), 4)
+end)
+test("the top panel's Hardcover stars use the same rounding", function()
+    local src = io.open("lib/bookshelf_hero_card.lua"):read("*a")
+    assert(src:find("halfStars(", 1, true), "the top panel rounds its own way")
 end)
 test("reviewsHtml formats the date (ISO fallback without datetime module)", function()
     local html = Tokens.reviewsHtml{
@@ -615,6 +646,15 @@ test("autoLinkReportHtml: lists linked books and counts no-id (exact mode)", fun
     assert(html:find("Not matched %(1%)"), "not-matched section missing")
     assert(html:find("No identifier %(184%)"), "no-id count missing")
     assert(html:find("Obscure Title", 1, true), "not-matched name missing")
+end)
+
+test("autoLinkReportHtml: a pass that ended by itself says why, escaped", function()
+    local html = Tokens.autoLinkReportHtml{ cancelled = true, linked = {}, nomatch = {},
+        why = "Hardcover's daily limit <reached>" }
+    assert(html:find("<p>Hardcover&#39;s daily limit &lt;reached&gt;</p>", 1, true)
+        or html:find("<p>Hardcover's daily limit &lt;reached&gt;</p>", 1, true), html)
+    local plain = Tokens.autoLinkReportHtml{ cancelled = true, linked = {}, nomatch = {} }
+    assert(not plain:find("daily limit", 1, true))
 end)
 
 test("autoLinkReportHtml: best-guess shows score and no no-id section", function()

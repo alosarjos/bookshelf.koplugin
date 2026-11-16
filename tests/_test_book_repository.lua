@@ -2349,6 +2349,59 @@ test("getBySource: a collection keeps its native KOReader order (#441)", functio
         "expected the collection's own order, got " .. got)
 end)
 
+test("getBySource: Favorites can keep its own collection order", function()
+    -- Favorites is a KOReader collection too; a reader asked to see it in
+    -- the order they arranged it. Order set as the REVERSE of alphabetical.
+    _setupResolverLibrary()
+    local rc = package.loaded["readcollection"]
+    local saved = rc.coll.favorites
+    rc.coll.favorites = {
+        ["/lib/novels/charlie.epub"] = { file = "/lib/novels/charlie.epub", order = 1 },
+        ["/lib/comics/bravo.epub"]   = { file = "/lib/comics/bravo.epub",   order = 2 },
+        ["/lib/comics/alpha.epub"]   = { file = "/lib/comics/alpha.epub",   order = 3 },
+    }
+    local list = Repo.getBySource({ kind = "favorites" }, nil,
+                                  { { key = "collection_order", reverse = false } }, 0, 10)
+    rc.coll.favorites = saved
+    _teardownResolverLibrary()
+    local got = {}
+    for i, b in ipairs(list) do got[i] = b.title end
+    got = table.concat(got, ",")
+    assert(got == "Charlie,Bravo,Alpha", "expected the favorites' own order, got " .. got)
+end)
+
+test("a reordered Favorites collection shows its new order (its own cache key)", function()
+    -- A Favorites shelf is cached under "favorites|...", not
+    -- "collection|favorites|...": a reorder (invalidateCollectionCache) has
+    -- to drop it too, or a book moved there stayed put until a refresh.
+    _setupResolverLibrary()
+    local rc = package.loaded["readcollection"]
+    local saved = rc.coll.favorites
+    local function fav(a, b, c)
+        rc.coll.favorites = {
+            ["/lib/novels/charlie.epub"] = { file = "/lib/novels/charlie.epub", order = a },
+            ["/lib/comics/bravo.epub"]   = { file = "/lib/comics/bravo.epub",   order = b },
+            ["/lib/comics/alpha.epub"]   = { file = "/lib/comics/alpha.epub",   order = c },
+        }
+    end
+    local function titles()
+        local list = Repo.getBySource({ kind = "favorites" }, nil,
+                                      { { key = "collection_order", reverse = false } }, 0, 10)
+        local got = {}
+        for i, b in ipairs(list) do got[i] = b.title end
+        return table.concat(got, ",")
+    end
+    fav(1, 2, 3)
+    local first = titles()
+    fav(3, 2, 1)
+    Repo.invalidateCollectionCache(rc.default_collection_name or "favorites")
+    local second = titles()
+    rc.coll.favorites = saved
+    _teardownResolverLibrary()
+    assert(first == "Charlie,Bravo,Alpha", "first: " .. first)
+    assert(second == "Alpha,Bravo,Charlie", "the old order was kept: " .. second)
+end)
+
 test("getBySource: genre kind filters books via BIM keywords->genres mapping", function()
     _setupResolverLibrary()
     -- buildBookMeta maps BIM `keywords` string -> genres array; the genre
@@ -2524,6 +2577,53 @@ test("buildBookMeta: a real embedded title still beats the catalogue's", functio
     _G._test_bim_data = nil
     assert(b.title == "The Goal", "embedded title must win, got " .. tostring(b.title))
     assert(b.is_kindle == true, "identity still re-attached")
+end)
+
+test("buildBookMeta: Kindle source corrections beat converted EPUB embedded metadata", function()
+    local epub = "/cache/kindle.koplugin/cc_custom.epub"
+    local kfx = "/mnt/us/documents/Custom.kfx"
+    local Kindle = dofile("lib/bookshelf_kindle_source.lua")
+    local previous_ds = package.loaded["docsettings"]
+    local ds = {}
+    for k, v in pairs(previous_ds) do ds[k] = v end
+    ds.findCustomMetadataFile = function(_self, path)
+        return path == kfx and "/metadata/custom_metadata.lua" or nil
+    end
+    ds.openSettingsFile = function()
+        return { readSetting = function(_self, key)
+            if key == "custom_props" then return { title = "Corrected Title", authors = "Correct Author" } end
+        end }
+    end
+    package.loaded["docsettings"] = ds
+    package.loaded["lib/bookshelf_kindle_source"] = Kindle
+    Kindle._stat = function() return { mode = "file", size = 12345, modification = 1 } end
+    Kindle._sidecar = function() return { percent_finished = 0.42, status = "reading" } end
+    Kindle._query = function()
+        return { p_uuid = { "custom" }, p_location = { kfx },
+            p_titles_0_nominal = { "Catalog Title" },
+            j_credits = { '[{"name":{"display":"Catalog Author"},"kind":"Author"}]' },
+            p_mimeType = { "application/x-kfx-ebook" } }, 1
+    end
+    Kindle._plugin = function() return {
+        prepareKnownKindlePath = function() return epub end,
+        cache_manager = { getCachePaths = function() return epub end },
+    } end
+    _G._test_bim_data = { [epub] = { title = "Embedded Title", authors = "Embedded Author" } }
+    local ok, result = pcall(function()
+        local shelf = Kindle.listBooks()[1]
+        assert(shelf, "source record missing")
+        return Repo.buildBookMeta(epub)
+    end)
+    package.loaded["docsettings"] = previous_ds
+    package.loaded["lib/bookshelf_kindle_source"] = nil
+    _G._test_bim_data = nil
+    assert(ok, result)
+    assert(result.title == "Corrected Title", "hero ignored source title: " .. tostring(result.title))
+    assert(result.display_title == "Corrected Title", "hero caption differs")
+    assert(result.author == "Correct Author", "hero ignored source author")
+    assert(result.authors[1] == "Correct Author", "hero authors differ")
+    assert(result.filepath == epub and result.kindle_source_path == kfx, "identity changed")
+    assert(result.percent_finished == 0.42, "reading progress changed")
 end)
 
 test("buildBook: leaves an ordinary book untouched when a Kindle library exists", function()
@@ -7079,6 +7179,182 @@ test("a failing listener does not stop the bump or the others", function()
     Repo.onDataGeneration(a, nil); Repo.onDataGeneration(b, nil)
     assert(Repo.dataGeneration() == g + 1, "the generation did not move")
     assert(n == 1, "the second listener did not hear the bump")
+end)
+
+test("cacheEpoch: every invalidation moves it, favourites and read state included", function()
+    -- The shelf keeps its sub-shelf tiles' book lists while this number
+    -- stands, so an invalidation that left it alone would leave a stale count.
+    local names = {}
+    for name, fn in pairs(Repo) do
+        if type(fn) == "function" and (name:match("^invalidate") or name == "forgetBook") then
+            names[#names + 1] = name
+        end
+    end
+    table.sort(names)
+    assert(#names >= 10, "expected the invalidate* family, found " .. #names)
+    for _i, name in ipairs(names) do
+        local e = Repo.cacheEpoch()
+        pcall(Repo[name], "/no/such/book.epub")
+        assert(Repo.cacheEpoch() > e, name .. " left the cache epoch where it was")
+    end
+    -- a data generation bump is an invalidation too
+    local e = Repo.cacheEpoch()
+    Repo.invalidateLightMeta()
+    assert(Repo.cacheEpoch() > e)
+    -- and a read does not move it
+    e = Repo.cacheEpoch()
+    Repo.dataGeneration()
+    assert(Repo.cacheEpoch() == e, "reading moved the epoch")
+end)
+
+-- ============================================================================
+-- Issue 602: the minutes the Time left sort orders by
+-- ============================================================================
+
+_G._tl_repo = Repo
+-- progress: fp -> { pct, status } (a book with a sidecar); pace: fp -> { pages
+-- in the book, pages timed, seconds over them } as the statistics hold them.
+local function withStats(progress, pace, fn, Repo)
+    Repo = Repo or _G._tl_repo
+    local rp, md, bp, hs = Repo.readProgress, Repo._sidecarMd5, Repo._bookPace,
+        package.loaded["docsettings"].hasSidecarFile
+    local queried = {}
+    package.loaded["docsettings"].hasSidecarFile = function(_self, fp) return progress[fp] ~= nil end
+    Repo.readProgress = function(fp)
+        local p = progress[fp]
+        if p then return p[1], p[2] end
+    end
+    Repo._sidecarMd5 = function(fp) return "md5:" .. fp end
+    Repo._bookPace = function(md5)
+        queried[#queried + 1] = md5
+        local p = pace[md5:sub(5)]
+        if p then return p[1], p[2], p[3] end
+    end
+    Repo.invalidateStatsCache()
+    local ok, err = pcall(fn, queried)
+    Repo.readProgress, Repo._sidecarMd5, Repo._bookPace = rp, md, bp
+    package.loaded["docsettings"].hasSidecarFile = hs
+    Repo.invalidateStatsCache()
+    assert(ok, err)
+end
+
+test("the estimate: pages left at the book's own pace, in minutes", function()
+    -- 400 pages, a quarter in: 300 left, at 60 s a page
+    assert(Repo._timeLeft(0.25, 400, 100, 6000) == 300)
+    assert(Repo._timeLeft(1, 400, 100, 6000) == 0)
+    assert(Repo._timeLeft(0.5, 0, 100, 6000) == nil, "no page total")
+    assert(Repo._timeLeft(0.5, 400, 0, 0) == nil, "no pages timed")
+    assert(Repo._timeLeft(nil, 400, 100, 6000) == nil)
+end)
+
+test("%book_time_left and the Time left sort share the one estimate", function()
+    local src = io.open("lib/bookshelf_book_repository.lua"):read("*a")
+    local fn = src:match("function Repo.enrichStats%(book%)(.-)\nend\n")
+    assert(fn and fn:find("Repo._timeLeft(book.book_pct, pages_total, capped_pages, capped_time)", 1, true),
+        "two copies of the sum: the shelf order and the minutes shown can disagree")
+    local tl = src:match("function Repo.timeLeftMinutes%(fp%)(.-)\nend\n")
+    assert(tl and tl:find("Repo._timeLeft(", 1, true))
+end)
+
+test("timeLeftMinutes: a book being read answers what the statistics give for where it is", function()
+    withStats({ ["/tl/a.epub"] = { 0.25, "reading" } }, { ["/tl/a.epub"] = { 400, 100, 6000 } }, function()
+        assert(Repo.timeLeftMinutes("/tl/a.epub") == 300, tostring(Repo.timeLeftMinutes("/tl/a.epub")))
+    end)
+end)
+
+test("timeLeftMinutes: a book never opened has no estimate, and the statistics are not asked", function()
+    withStats({}, { ["/tl/new.epub"] = { 400, 100, 6000 } }, function(queried)
+        assert(Repo.timeLeftMinutes("/tl/new.epub") == nil)
+        assert(#queried == 0, "an unopened library would query the statistics once a book")
+    end)
+end)
+
+test("timeLeftMinutes: a finished book has no time left to sort by", function()
+    withStats({ ["/tl/done.epub"] = { 0.4, "complete" }, ["/tl/done2.epub"] = { 1, "finished" } },
+              { ["/tl/done.epub"] = { 400, 100, 6000 }, ["/tl/done2.epub"] = { 400, 100, 6000 } }, function(queried)
+        assert(Repo.timeLeftMinutes("/tl/done.epub") == nil, "marked finished at 40%: it would sort among the books being read")
+        assert(Repo.timeLeftMinutes("/tl/done2.epub") == nil)
+        assert(#queried == 0)
+    end)
+end)
+
+test("timeLeftMinutes: a book on hold keeps its estimate", function()
+    withStats({ ["/tl/hold.epub"] = { 0.5, "abandoned" } }, { ["/tl/hold.epub"] = { 100, 10, 600 } }, function()
+        assert(Repo.timeLeftMinutes("/tl/hold.epub") == 50)
+    end)
+end)
+
+test("timeLeftMinutes: opened but no statistics for it is no estimate, not an error", function()
+    withStats({ ["/tl/nostat.epub"] = { 0.5, "reading" }, ["/tl/nopct.epub"] = { nil, "reading" } }, {}, function()
+        assert(Repo.timeLeftMinutes("/tl/nostat.epub") == nil)
+        assert(Repo.timeLeftMinutes("/tl/nopct.epub") == nil)
+        assert(Repo.timeLeftMinutes(nil) == nil)
+    end)
+end)
+
+test("timeLeftMinutes: the statistics are asked once a book until reading moves them", function()
+    -- Records are rebuilt for every shelf and every sort; the answer is the book's.
+    withStats({ ["/tl/once.epub"] = { 0.5, "reading" }, ["/tl/none.epub"] = { 0.5, "reading" } },
+              { ["/tl/once.epub"] = { 100, 10, 600 } }, function(queried)
+        Repo.timeLeftMinutes("/tl/once.epub"); Repo.timeLeftMinutes("/tl/once.epub")
+        Repo.timeLeftMinutes("/tl/none.epub"); Repo.timeLeftMinutes("/tl/none.epub")
+        assert(#queried == 2, "asked " .. #queried .. " times for two books")
+        Repo.invalidateStatsCache()
+        assert(Repo.timeLeftMinutes("/tl/once.epub") == 50)
+        assert(#queried == 3, "the minutes from before the reading session are kept")
+    end)
+end)
+
+test("timeLeftMinutes: a book marked finished since loses its estimate", function()
+    local progress = { ["/tl/mark.epub"] = { 0.5, "reading" } }
+    withStats(progress, { ["/tl/mark.epub"] = { 100, 10, 600 } }, function()
+        assert(Repo.timeLeftMinutes("/tl/mark.epub") == 50)
+        progress["/tl/mark.epub"] = { 0.5, "complete" }
+        Repo.invalidateProgressCache("/tl/mark.epub")
+        assert(Repo.timeLeftMinutes("/tl/mark.epub") == nil, "still sorted among the books being read")
+    end)
+end)
+
+test("the Time left sort asks the repository", function()
+    -- The copy loaded last is the one the sort engine asks.
+    local R = dofile("lib/bookshelf_book_repository.lua")
+    withStats({ ["/tl/s1.epub"] = { 0.5, "reading" }, ["/tl/s2.epub"] = { 0.5, "reading" } },
+              { ["/tl/s1.epub"] = { 900, 10, 600 }, ["/tl/s2.epub"] = { 30, 10, 600 } }, function()
+        local SE = require("lib/bookshelf_sort_engine")
+        SE.clearTimeLeftMemo()
+        local recs = { { filepath = "/tl/s1.epub", title = "A" }, { filepath = "/tl/new.epub", title = "B" },
+                       { filepath = "/tl/s2.epub", title = "C" } }
+        SE.sort(recs, { { key = "time_left", reverse = false } })
+        assert(recs[1].filepath == "/tl/s2.epub" and recs[2].filepath == "/tl/s1.epub"
+            and recs[3].filepath == "/tl/new.epub", recs[1].filepath .. " " .. recs[2].filepath)
+    end, R)
+end)
+
+test("the statistics are read on one connection for a whole sort, and let go after", function()
+    local src = io.open("lib/bookshelf_book_repository.lua"):read("*a")
+    local fn = src:match("function Repo._bookPace%(md5%)(.-)\nend\n")
+    assert(fn, "_bookPace moved")
+    -- Measured on a PW5: 17 ms a book opening and preparing each time, 0.6 ms
+    -- on a connection already open.
+    assert(fn:find("Repo._pace_db", 1, true), "a connection opened and prepared for every book")
+    assert(fn:find("ORDER BY last_open DESC LIMIT 1", 1, true), "the row KOReader opened last")
+    assert(src:find("function Repo._closePaceDb()", 1, true))
+end)
+
+test("closing a book drops the shelves sorted by time left, and the remembered answers", function()
+    local src = io.open("lib/bookshelf_book_repository.lua"):read("*a")
+    assert(src:find('"s:time_left:"', 1, true), "the cached, sorted list keeps the old order after reading")
+    local keys = src:match("local READ_STATE_SORT_KEYS = (%b{})")
+    assert(keys and keys:find("time_left = true", 1, true), "Home and folder shelves keep the old order")
+    local SE = require("lib/bookshelf_sort_engine")
+    local n = 0
+    SE.setTimeLeftResolver(function() n = n + 1; return 5 end)
+    local rec = { filepath = "/tl/memo.epub", title = "A" }
+    SE.timeLeftOf(rec); SE.timeLeftOf(rec)
+    assert(n == 1)
+    Repo.invalidateStatsCache()
+    SE.timeLeftOf(rec)
+    assert(n == 2, "the minutes from before the reading session are still remembered")
 end)
 
 -- ============================================================================

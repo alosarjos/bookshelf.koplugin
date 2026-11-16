@@ -253,7 +253,9 @@ t.test("the hero's text blocks composite over the ground; no column stencil", fu
         "_buildRightColumn does not set the ground flag")
     assert(not col:find("Wallpaper.mask", 1, true), "the column is still stencilled whole")
     local bt = src:match("\nlocal function buildText%(.-\nend\n")
-    assert(bt and bt:find("textBoxClass():new", 1, true),
+    -- RunTextBox (text with coloured star rows, issue 594) is a
+    -- TransparentTextBox, so it composites on any ground.
+    assert(bt and bt:find("(runs and RunTextBox or textBoxClass()):new", 1, true),
         "buildText builds a stock TextBoxWidget, which blits an opaque box over a ground")
     -- Every code use of the stencil sits beside the bar, and there is one.
     local uses = 0
@@ -269,7 +271,7 @@ t.test("the hero's tag pills go unfilled over a painted ground", function()
     -- box on the wallpaper, and its black border would vanish on the dark
     -- page. The builder takes the ink and drops the fill; the hero passes it
     -- only when the ground is painted, so the popups keep their white pills.
-    local src = read("lib/bookshelf_widget.lua")
+    local src = dofile("tests/_widget_source.lua")
     local grp = src:match("\nfunction BookshelfWidget:_buildPillGroup%(.-\nend\n")
     assert(grp, "no _buildPillGroup")
     assert(grp:find("on_overflow, ink", 1, true), "_buildPillGroup takes no ink")

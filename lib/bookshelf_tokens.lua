@@ -426,14 +426,25 @@ Tokens.expanders.hardcover_rating = function(book)
     return string.format("%.1f", r):gsub("%.0$", "")
 end
 
+-- halfStars(rating) -> the rating rounded to the nearest half star, 0-5:
+-- under .25 rounds down, .25 to .74 is a half, .75 and up a whole star
+-- (maintainer: 3.9 showed three and a half, 3.4 showed three). Shared by
+-- the %hardcover_stars token and the top panel's Hardcover stars.
+function Tokens.halfStars(rating)
+    local r = tonumber(rating)
+    if not r then return nil end
+    if r > 5 then r = 5 elseif r < 0 then r = 0 end
+    return math.floor(r * 2 + 0.5) / 2
+end
+
 -- Build a five-glyph star row (full / half / empty) for a numeric rating
 -- in 0-5. Used by the %hardcover_stars token (Hardcover ratings are
 -- inherently fractional). Returns "" for a missing/zero rating so the token
 -- can gate its display. User ratings do NOT use this -- they stay integer.
 function Tokens.starString(rating)
-    local r = tonumber(rating)
-    if not r or r <= 0 then return "" end
-    if r > 5 then r = 5 end
+    local raw = tonumber(rating)
+    if not raw or raw <= 0 then return "" end
+    local r = Tokens.halfStars(raw)
     local whole = math.floor(r)
     local out = {}
     for i = 1, 5 do
@@ -667,7 +678,10 @@ function Tokens.reviewsHtml(payload)
     -- rows below still use the HTML star glyphs (Tokens.starString).
     local reviews = type(payload.reviews) == "table" and payload.reviews or {}
     if #reviews == 0 then
-        out[#out + 1] = "<p>No non-spoiler reviews found.</p>"
+        -- empty_text: the caller's own reason for the empty list.
+        local why = type(payload.empty_text) == "string" and payload.empty_text ~= ""
+            and _escHtml(payload.empty_text) or "No non-spoiler reviews found."
+        out[#out + 1] = "<p>" .. why .. "</p>"
         return table.concat(out, "\n")
     end
 
@@ -749,6 +763,11 @@ function Tokens.autoLinkReportHtml(data)
         summary[#summary + 1] = string.format("Errors %d", data.errors)
     end
     out[#out + 1] = '<p class="rating">' .. table.concat(summary, DOT) .. "</p>"
+    -- data.why: the reason a pass ended by itself (no connection, the day's
+    -- Hardcover budget spent), in the caller's words.
+    if type(data.why) == "string" and data.why ~= "" then
+        out[#out + 1] = "<p>" .. _escHtml(data.why) .. "</p>"
+    end
 
     -- Linked: one line per book, local name -> matched Hardcover title/author.
     out[#out + 1] = "<hr/>"
